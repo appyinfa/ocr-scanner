@@ -1,12 +1,27 @@
+/**
+ * AppyCrew OCR Widget v10 - Enhanced Edition
+ * Complete integration of all improvements:
+ * - Smart field mapping with semantic similarity
+ * - Modern UI with speed dial FAB
+ * - Toast notifications
+ * - Context-aware extraction
+ * - Fuzzy matching & confidence scoring
+ * - Progressive workflow
+ * - Keyboard shortcuts
+ * - Smart auto-hide
+ * - Mobile-optimized
+ */
+
 (function () {
   if (typeof window === "undefined") return;
   if (window.__APPYCREW_OCR_WIDGET_INITED__) return;
   window.__APPYCREW_OCR_WIDGET_INITED__ = true;
 
-  var PANEL_ID = "appycrew-ocr-panel";
-  var FAB_ID = "appycrew-ocr-fab";
+  const PANEL_ID = "appycrew-ocr-panel";
+  const FAB_ID = "appycrew-ocr-fab";
+  const TOAST_CONTAINER_ID = "appycrew-toast-container";
 
-  var state = {
+  const state = {
     apiBase: null,
     forms: [],
     activeForm: null,
@@ -20,251 +35,50 @@
     voiceData: null,
     isListening: false,
     speechRecognition: null,
-    ui: null
+    ui: null,
+    fieldClassifier: {
+      trainingData: [],
+      learn: function(fieldLabel, fieldType, correctValue) {
+        this.trainingData.push({
+          fieldLabel: fieldLabel.toLowerCase(),
+          fieldType: fieldType || 'text',
+          correctValue: String(correctValue).toLowerCase(),
+          timestamp: Date.now()
+        });
+        if (this.trainingData.length % 5 === 0) {
+          this.save();
+        }
+      },
+      save: function() {
+        try {
+          localStorage.setItem('appycrew_field_classifier', 
+            JSON.stringify(this.trainingData.slice(-100))
+          );
+        } catch (e) {
+          console.warn('Could not save field classifier:', e);
+        }
+      },
+      load: function() {
+        try {
+          const saved = localStorage.getItem('appycrew_field_classifier');
+          if (saved) {
+            this.trainingData = JSON.parse(saved);
+          }
+        } catch (e) {
+          console.warn('Could not load field classifier:', e);
+        }
+      }
+    }
   };
 
-  // ---------- Utilities ----------
+  // ========== UTILITIES ==========
 
   function ready(fn) {
-    if (
-      document.readyState === "complete" ||
-      document.readyState === "interactive"
-    ) {
+    if (document.readyState === "complete" || document.readyState === "interactive") {
       setTimeout(fn, 0);
     } else {
       document.addEventListener("DOMContentLoaded", fn);
     }
-  }
-
-  function injectStyles() {
-    if (document.getElementById(PANEL_ID + "-styles")) return;
-    var css = `
-#${FAB_ID} {
-  position: fixed;
-  right: 16px;
-  bottom: 16px;
-  z-index: 2147480000;
-  border-radius: 999px;
-  padding: 10px 16px;
-  border: none;
-  background: #111827;
-  color: #f9fafb;
-  font-size: 13px;
-  font-weight: 500;
-  box-shadow: 0 10px 25px rgba(15, 23, 42, 0.35);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
-    "Segoe UI", sans-serif;
-}
-#${FAB_ID}:hover {
-  background: #020617;
-}
-#${FAB_ID} .ac-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: #22c55e;
-}
-
-#${PANEL_ID} {
-  position: fixed;
-  right: 16px;
-  bottom: 72px;
-  width: 340px;
-  max-width: calc(100vw - 32px);
-  background: #f9fafb;
-  border-radius: 16px;
-  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.45);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
-    "Segoe UI", sans-serif;
-  color: #0f172a;
-  z-index: 2147480000;
-  overflow: hidden;
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(8px);
-  transition: opacity 0.18s ease, transform 0.18s ease;
-}
-#${PANEL_ID}.ac-open {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateY(0);
-}
-
-#${PANEL_ID} .ac-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
-  background: #020617;
-  color: #e5e7eb;
-}
-#${PANEL_ID} .ac-title {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-#${PANEL_ID} .ac-title-main {
-  font-size: 14px;
-  font-weight: 600;
-}
-#${PANEL_ID} .ac-title-sub {
-  font-size: 11px;
-  opacity: 0.85;
-}
-#${PANEL_ID} .ac-close {
-  border: none;
-  background: transparent;
-  color: #e5e7eb;
-  cursor: pointer;
-  font-size: 16px;
-  line-height: 1;
-  padding: 0 2px;
-}
-
-#${PANEL_ID} .ac-body {
-  padding: 10px 14px 12px;
-  font-size: 12px;
-}
-
-#${PANEL_ID} .ac-status {
-  font-size: 11px;
-  margin-bottom: 8px;
-  color: #4b5563;
-}
-#${PANEL_ID} .ac-status strong {
-  font-weight: 600;
-}
-#${PANEL_ID} .ac-status.error {
-  color: #b91c1c;
-}
-
-#${PANEL_ID} .ac-actions {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-#${PANEL_ID} .ac-btn {
-  border-radius: 999px;
-  border: none;
-  padding: 6px 10px;
-  font-size: 11px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-}
-#${PANEL_ID} .ac-btn-primary {
-  background: #111827;
-  color: #f9fafb;
-}
-#${PANEL_ID} .ac-btn-primary:hover {
-  background: #020617;
-}
-#${PANEL_ID} .ac-btn-ghost {
-  background: rgba(15, 23, 42, 0.03);
-  color: #111827;
-}
-#${PANEL_ID} .ac-btn-ghost:hover {
-  background: rgba(15, 23, 42, 0.08);
-}
-
-/* Voice button always visible */
-#${PANEL_ID} .ac-voice-btn {
-  border-radius: 999px;
-  border: none;
-  padding: 6px 10px;
-  font-size: 11px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  background: rgba(15, 23, 42, 0.04);
-  color: #0f172a;
-}
-#${PANEL_ID} .ac-voice-btn:hover {
-  background: rgba(15, 23, 42, 0.08);
-}
-#${PANEL_ID} .ac-voice-btn[data-listening="true"] {
-  background: rgba(34, 197, 94, 0.14);
-  color: #15803d;
-}
-#${PANEL_ID} .ac-voice-btn svg {
-  width: 14px;
-  height: 14px;
-}
-
-#${PANEL_ID} .ac-mappings {
-  max-height: 260px;
-  overflow: auto;
-  border-radius: 10px;
-  background: #f3f4f6;
-  padding: 6px 6px 4px;
-  margin-bottom: 8px;
-}
-#${PANEL_ID} .ac-mappings-empty {
-  font-size: 11px;
-  color: #6b7280;
-  padding: 4px 2px 2px;
-}
-#${PANEL_ID} .ac-map-row {
-  background: #ffffff;
-  border-radius: 8px;
-  padding: 6px 7px;
-  margin-bottom: 4px;
-  display: flex;
-  gap: 6px;
-  align-items: flex-start;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-}
-#${PANEL_ID} .ac-map-row:last-child {
-  margin-bottom: 0;
-}
-#${PANEL_ID} .ac-map-check {
-  margin-top: 3px;
-}
-#${PANEL_ID} .ac-map-main {
-  flex: 1;
-}
-#${PANEL_ID} .ac-map-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: #111827;
-  margin-bottom: 2px;
-}
-#${PANEL_ID} .ac-map-preview {
-  font-size: 11px;
-  color: #4b5563;
-  word-break: break-word;
-}
-
-#${PANEL_ID} .ac-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 6px;
-}
-#${PANEL_ID} .ac-footer-left {
-  font-size: 10px;
-  color: #9ca3af;
-}
-#${PANEL_ID} .ac-footer-actions {
-  display: flex;
-  gap: 6px;
-}
-#${PANEL_ID} .ac-btn-disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-`;
-    var style = document.createElement("style");
-    style.id = PANEL_ID + "-styles";
-    style.textContent = css;
-    document.head.appendChild(style);
   }
 
   function detectApiBase() {
@@ -277,21 +91,153 @@
     return state.apiBase;
   }
 
+  // Levenshtein distance for fuzzy matching
+  function levenshtein(a, b) {
+    const matrix = [];
+    for (let i = 0; i <= b.length; i++) {
+      matrix[i] = [i];
+    }
+    for (let j = 0; j <= a.length; j++) {
+      matrix[0][j] = j;
+    }
+    for (let i = 1; i <= b.length; i++) {
+      for (let j = 1; j <= a.length; j++) {
+        if (b.charAt(i - 1) === a.charAt(j - 1)) {
+          matrix[i][j] = matrix[i - 1][j - 1];
+        } else {
+          matrix[i][j] = Math.min(
+            matrix[i - 1][j - 1] + 1,
+            matrix[i][j - 1] + 1,
+            matrix[i - 1][j] + 1
+          );
+        }
+      }
+    }
+    return matrix[b.length][a.length];
+  }
+
+  // Semantic similarity (Jaccard)
+  function semanticSimilarity(text1, text2) {
+    const tokens1 = new Set(text1.toLowerCase().split(/\W+/).filter(Boolean));
+    const tokens2 = new Set(text2.toLowerCase().split(/\W+/).filter(Boolean));
+    
+    const intersection = new Set([...tokens1].filter(x => tokens2.has(x)));
+    const union = new Set([...tokens1, ...tokens2]);
+    
+    return intersection.size / (union.size || 1);
+  }
+
+  // Fuzzy match against keywords
+  function fuzzyMatch(text, keywords, threshold = 2) {
+    const lower = text.toLowerCase();
+    const words = lower.split(/\s+/);
+    
+    for (const keyword of keywords) {
+      if (lower.includes(keyword)) return keyword;
+      
+      for (const word of words) {
+        if (levenshtein(word, keyword) <= threshold) {
+          return keyword;
+        }
+      }
+    }
+    return null;
+  }
+
+  // Image compression
+  async function compressImage(file, maxWidth = 1200, quality = 0.85) {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+          
+          if (width > maxWidth) {
+            height *= maxWidth / width;
+            width = maxWidth;
+          }
+          
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        };
+        img.src = e.target.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // ========== TOAST NOTIFICATIONS ==========
+
+  function showToast(message, type = 'info', duration = 3000) {
+    let container = document.getElementById(TOAST_CONTAINER_ID);
+    if (!container) {
+      container = document.createElement('div');
+      container.id = TOAST_CONTAINER_ID;
+      container.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        z-index: 2147483648;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        pointer-events: none;
+      `;
+      document.body.appendChild(container);
+    }
+
+    const toast = document.createElement('div');
+    toast.className = 'ac-toast ac-toast-' + type;
+    
+    const icons = {
+      success: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>',
+      error: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>',
+      info: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>',
+      loading: '<div class="ac-spinner-sm"></div>'
+    };
+    
+    toast.innerHTML = `
+      <div class="ac-toast-icon">${icons[type]}</div>
+      <div class="ac-toast-message">${message}</div>
+    `;
+    
+    container.appendChild(toast);
+    
+    setTimeout(() => toast.classList.add('ac-toast-show'), 10);
+    
+    if (duration > 0) {
+      setTimeout(() => {
+        toast.classList.remove('ac-toast-show');
+        setTimeout(() => toast.remove(), 300);
+      }, duration);
+    }
+    
+    return toast;
+  }
+
+  // ========== FIELD DETECTION & MAPPING ==========
+
   function isElementVisible(el) {
     if (!el || !el.getBoundingClientRect) return false;
-    var rect = el.getBoundingClientRect();
-    var vh = window.innerHeight || document.documentElement.clientHeight;
+    const rect = el.getBoundingClientRect();
+    const vh = window.innerHeight || document.documentElement.clientHeight;
     if (rect.bottom <= 0 || rect.top >= vh) return false;
-    var height = rect.height || 0;
+    const height = rect.height || 0;
     if (!height) return true;
-    var visibleTop = Math.max(rect.top, 0);
-    var visibleBottom = Math.min(rect.bottom, vh);
-    var visible = Math.max(0, visibleBottom - visibleTop);
+    const visibleTop = Math.max(rect.top, 0);
+    const visibleBottom = Math.min(rect.bottom, vh);
+    const visible = Math.max(0, visibleBottom - visibleTop);
     return visible / height >= 0.3;
   }
 
   function collectForms() {
-    var forms = Array.prototype.slice.call(document.querySelectorAll("form"));
+    const forms = Array.prototype.slice.call(document.querySelectorAll("form"));
     state.forms = forms;
     state.activeForm = pickActiveForm(forms);
     updateFabVisibility();
@@ -299,18 +245,27 @@
 
   function pickActiveForm(forms) {
     if (!forms || !forms.length) return null;
-    var vh = window.innerHeight || document.documentElement.clientHeight;
-    var best = null;
-    var bestScore = -1;
-    for (var i = 0; i < forms.length; i++) {
-      var f = forms[i];
-      var rect = f.getBoundingClientRect();
-      var height = rect.height || 0;
+    const vh = window.innerHeight || document.documentElement.clientHeight;
+    let best = null;
+    let bestScore = -1;
+    
+    for (let i = 0; i < forms.length; i++) {
+      const f = forms[i];
+      const rect = f.getBoundingClientRect();
+      const height = rect.height || 0;
       if (height <= 0) continue;
-      var visibleTop = Math.max(rect.top, 0);
-      var visibleBottom = Math.min(rect.bottom, vh);
-      var visible = Math.max(0, visibleBottom - visibleTop);
-      var score = visible;
+      
+      const visibleTop = Math.max(rect.top, 0);
+      const visibleBottom = Math.min(rect.bottom, vh);
+      const visible = Math.max(0, visibleBottom - visibleTop);
+      
+      let score = visible;
+      
+      // Bonus for having type hints
+      if (f.querySelector('[data-appycrew-type]')) {
+        score += 1000;
+      }
+      
       if (score > bestScore) {
         bestScore = score;
         best = f;
@@ -319,875 +274,24 @@
     return best;
   }
 
-  function setupMutationObserver() {
-    if (state.observer) return;
-    var obs = new MutationObserver(function () {
-      collectForms();
-    });
-    obs.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
-    state.observer = obs;
-    window.addEventListener(
-      "scroll",
-      function () {
-        collectForms();
-      },
-      { passive: true }
-    );
-    window.addEventListener(
-      "resize",
-      function () {
-        collectForms();
-      },
-      { passive: true }
-    );
-  }
-
-  // ---------- UI creation ----------
-
-  function createFab() {
-    if (document.getElementById(FAB_ID)) return;
-    var btn = document.createElement("button");
-    btn.id = FAB_ID;
-    btn.type = "button";
-
-    var dot = document.createElement("span");
-    dot.className = "ac-dot";
-    var label = document.createElement("span");
-    label.textContent = "Scan with AppyCrew";
-
-    btn.appendChild(dot);
-    btn.appendChild(label);
-
-    btn.addEventListener("click", function () {
-      togglePanel();
-    });
-
-    document.body.appendChild(btn);
-    updateFabVisibility();
-  }
-
-  function updateFabVisibility() {
-    var fab = document.getElementById(FAB_ID);
-    if (!fab) return;
-    if (state.forms && state.forms.length) {
-      fab.style.display = "flex";
-    } else {
-      fab.style.display = "none";
-    }
-  }
-
-  function togglePanel(forceOpen) {
-    var panel = document.getElementById(PANEL_ID);
-    if (!panel) {
-      panel = createPanel();
-    }
-    var open = panel.classList.contains("ac-open");
-    if (forceOpen === true) open = false; // will be toggled to open
-    panel.classList.toggle("ac-open", !open);
-  }
-
-  function createPanel() {
-    if (state.ui && state.ui.panel) return state.ui.panel;
-
-    var panel = document.createElement("div");
-    panel.id = PANEL_ID;
-
-    var header = document.createElement("div");
-    header.className = "ac-header";
-
-    var titleWrap = document.createElement("div");
-    titleWrap.className = "ac-title";
-    var titleMain = document.createElement("div");
-    titleMain.className = "ac-title-main";
-    titleMain.textContent = "AppyCrew OCR";
-    var titleSub = document.createElement("div");
-    titleSub.className = "ac-title-sub";
-    titleSub.textContent = "Scan or speak to fill this form";
-    titleWrap.appendChild(titleMain);
-    titleWrap.appendChild(titleSub);
-
-    var closeBtn = document.createElement("button");
-    closeBtn.className = "ac-close";
-    closeBtn.type = "button";
-    closeBtn.setAttribute("aria-label", "Close");
-    closeBtn.textContent = "×";
-    closeBtn.addEventListener("click", function () {
-      panel.classList.remove("ac-open");
-    });
-
-    header.appendChild(titleWrap);
-    header.appendChild(closeBtn);
-
-    var body = document.createElement("div");
-    body.className = "ac-body";
-
-    var status = document.createElement("div");
-    status.className = "ac-status";
-    status.textContent = "Ready. Take a photo or use Voice to fill the visible fields.";
-
-    var actions = document.createElement("div");
-    actions.className = "ac-actions";
-
-    var clearBtn = document.createElement("button");
-    clearBtn.type = "button";
-    clearBtn.className = "ac-btn ac-btn-ghost";
-    clearBtn.textContent = "Clear";
-    actions.appendChild(clearBtn);
-
-    var voiceBtn = document.createElement("button");
-    voiceBtn.type = "button";
-    voiceBtn.className = "ac-btn ac-voice-btn";
-    voiceBtn.innerHTML =
-      '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zm-1 14.93V20h2v-2.07A7.001 7.001 0 0 0 19 11h-2a5 5 0 0 1-10 0H5a7.001 7.001 0 0 0 6 6.93z"></path></svg><span>Voice</span>';
-    actions.appendChild(voiceBtn);
-
-    var scanBtn = document.createElement("button");
-    scanBtn.type = "button";
-    scanBtn.className = "ac-btn ac-btn-primary";
-    scanBtn.textContent = "Scan & match fields";
-    actions.appendChild(scanBtn);
-
-    var mappingsContainer = document.createElement("div");
-    mappingsContainer.className = "ac-mappings";
-    var mappingsEmpty = document.createElement("div");
-    mappingsEmpty.className = "ac-mappings-empty";
-    mappingsEmpty.textContent =
-      "No matches yet. Scan an image or use Voice to see suggested fills.";
-    mappingsContainer.appendChild(mappingsEmpty);
-
-    var footer = document.createElement("div");
-    footer.className = "ac-footer";
-    var footerLeft = document.createElement("div");
-    footerLeft.className = "ac-footer-left";
-    footerLeft.textContent = "AppyCrew OCR · visible fields only";
-    var footerActions = document.createElement("div");
-    footerActions.className = "ac-footer-actions";
-
-    var undoBtn = document.createElement("button");
-    undoBtn.type = "button";
-    undoBtn.className = "ac-btn ac-btn-ghost ac-btn-disabled";
-    undoBtn.textContent = "Undo";
-
-    var applyBtn = document.createElement("button");
-    applyBtn.type = "button";
-    applyBtn.className = "ac-btn ac-btn-primary ac-btn-disabled";
-    applyBtn.textContent = "Apply";
-
-    footerActions.appendChild(undoBtn);
-    footerActions.appendChild(applyBtn);
-
-    footer.appendChild(footerLeft);
-    footer.appendChild(footerActions);
-
-    var fileInput = document.createElement("input");
-    fileInput.type = "file";
-    fileInput.accept = "image/*";
-    fileInput.capture = "environment";
-    fileInput.style.display = "none";
-
-    body.appendChild(status);
-    body.appendChild(actions);
-    body.appendChild(mappingsContainer);
-    body.appendChild(footer);
-    body.appendChild(fileInput);
-
-    panel.appendChild(header);
-    panel.appendChild(body);
-    document.body.appendChild(panel);
-
-    // --- Wire up buttons ---
-
-    clearBtn.addEventListener("click", function () {
-      state.selectedFile = null;
-      state.lastOriginalText = "";
-      state.lastText = "";
-      state.lastVision = null;
-      state.voiceData = null;
-      state.mappings = [];
-      state.lastApplied = null;
-      fileInput.value = "";
-      mappingsContainer.innerHTML = "";
-      var empty = document.createElement("div");
-      empty.className = "ac-mappings-empty";
-      empty.textContent =
-        "Cleared. Scan again or use Voice to see matches.";
-      mappingsContainer.appendChild(empty);
-      status.classList.remove("error");
-      status.textContent =
-        "Cleared. Take a new photo or speak again to fill the form.";
-      undoBtn.classList.add("ac-btn-disabled");
-      applyBtn.classList.add("ac-btn-disabled");
-    });
-
-    voiceBtn.addEventListener("click", function () {
-      startVoiceInput({
-        statusEl: status,
-        mappingsContainer: mappingsContainer,
-        voiceBtn: voiceBtn,
-        undoBtn: undoBtn,
-        applyBtn: applyBtn
-      });
-    });
-
-    scanBtn.addEventListener("click", function () {
-      if (!state.activeForm) {
-        status.classList.add("error");
-        status.textContent =
-          "No form detected in view. Scroll to a form and try again.";
-        return;
-      }
-      fileInput.click();
-    });
-
-    fileInput.addEventListener("change", function (e) {
-      var file =
-        (e.target && e.target.files && e.target.files[0]) || null;
-      if (!file) return;
-      handleImageFile(file, status, mappingsContainer, undoBtn, applyBtn);
-    });
-
-    undoBtn.addEventListener("click", function () {
-      if (!state.lastApplied || !state.lastApplied.length) return;
-      restoreLastApplied();
-      undoBtn.classList.add("ac-btn-disabled");
-      status.classList.remove("error");
-      status.textContent = "Reverted to previous values.";
-    });
-
-    applyBtn.addEventListener("click", function () {
-      if (!state.mappings || !state.mappings.length) return;
-      var selected = state.mappings.filter(function (m) {
-        return m.checked !== false;
-      });
-      if (!selected.length) return;
-      applyMappings(selected);
-      undoBtn.classList.remove("ac-btn-disabled");
-      status.classList.remove("error");
-      status.textContent = "Applied to form.";
-    });
-
-    state.ui = {
-      panel: panel,
-      status: status,
-      mappingsContainer: mappingsContainer,
-      clearBtn: clearBtn,
-      voiceBtn: voiceBtn,
-      scanBtn: scanBtn,
-      undoBtn: undoBtn,
-      applyBtn: applyBtn,
-      fileInput: fileInput
-    };
-
-    return panel;
-  }
-
-  // ---------- Voice helpers ----------
-
-  function parseVoiceTranscriptToParts(transcript) {
-    if (!transcript) {
-      return { item: "", description: "", location: "", notes: "" };
-    }
-    var raw = String(transcript).trim();
-    var parts = raw
-      .split(/[;,]/)
-      .map(function (p) {
-        return p.trim();
-      })
-      .filter(Boolean);
-
-    var item = parts[0] || "";
-    var description = parts[1] || "";
-    var location = parts[2] || "";
-    var notes = parts.slice(3).join(", ").trim();
-
-    return {
-      item: item,
-      description: description,
-      location: location,
-      notes: notes
-    };
-  }
-
-  function translateVoiceToEnglish(text) {
-    // Optional server-side translation via /api/voice-translate
-    if (!text) return Promise.resolve(text);
-    var endpoint = "/api/voice-translate";
-    return fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ text: text })
-    })
-      .then(function (res) {
-        if (!res.ok) return text;
-        return res.json();
-      })
-      .then(function (data) {
-        if (data && typeof data.text === "string" && data.text.trim()) {
-          return data.text;
-        }
-        return text;
-      })
-      .catch(function () {
-        return text;
-      });
-  }
-
-  function startVoiceInput(opts) {
-    var statusEl = opts && opts.statusEl;
-    var mappingsContainer = opts && opts.mappingsContainer;
-    var voiceBtn = opts && opts.voiceBtn;
-    var undoBtn = opts && opts.undoBtn;
-    var applyBtn = opts && opts.applyBtn;
-
-    if (!state.activeForm) {
-      if (statusEl) {
-        statusEl.classList.add("error");
-        statusEl.textContent =
-          "No form detected in view. Scroll to a form and try again.";
-      }
-      return;
-    }
-
-    var SpeechRecognition =
-      window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      if (statusEl) {
-        statusEl.classList.add("error");
-        statusEl.textContent =
-          "Voice input is not supported in this browser.";
-      }
-      return;
-    }
-
-    if (state.isListening && state.speechRecognition) {
-      try {
-        state.speechRecognition.stop();
-      } catch (e) {}
-      state.isListening = false;
-      if (voiceBtn) voiceBtn.setAttribute("data-listening", "false");
-      if (statusEl) {
-        statusEl.classList.remove("error");
-        statusEl.textContent = "Stopped listening.";
-      }
-      return;
-    }
-
-    var rec = new SpeechRecognition();
-    rec.lang = window.APPYCREW_VOICE_LANG || "en-GB";
-    rec.interimResults = false;
-    rec.maxAlternatives = 1;
-
-    rec.onstart = function () {
-      state.isListening = true;
-      state.speechRecognition = rec;
-      if (statusEl) {
-        statusEl.classList.remove("error");
-        statusEl.textContent =
-          "Listening… say: 'Wardrobe, oak, master bedroom, left door loose, customer aware'.";
-      }
-      if (voiceBtn) voiceBtn.setAttribute("data-listening", "true");
-    };
-
-    rec.onerror = function (event) {
-      state.isListening = false;
-      if (voiceBtn) voiceBtn.setAttribute("data-listening", "false");
-      if (statusEl) {
-        statusEl.classList.add("error");
-        statusEl.textContent =
-          "Voice error: " +
-          (event && event.error
-            ? event.error
-            : "please try again or speak clearly.");
-      }
-    };
-
-    rec.onend = function () {
-      state.isListening = false;
-      if (voiceBtn) voiceBtn.setAttribute("data-listening", "false");
-      if (!state.voiceData && statusEl) {
-        statusEl.textContent = "No voice captured. Tap Voice to try again.";
-      }
-    };
-
-    rec.onresult = function (event) {
-      var res =
-        event &&
-        event.results &&
-        event.results[0] &&
-        event.results[0][0];
-      var transcript = res && res.transcript ? res.transcript : "";
-      if (!transcript) {
-        if (statusEl) {
-          statusEl.classList.add("error");
-          statusEl.textContent = "Didn't catch that. Please try again.";
-        }
-        return;
-      }
-
-      // Translate transcript to English (server-side) then parse & map
-      translateVoiceToEnglish(transcript).then(function (translated) {
-        var parts = parseVoiceTranscriptToParts(translated);
-        state.voiceData = {
-          item: parts.item,
-          description: parts.description,
-          location: parts.location,
-          notes: parts.notes,
-          transcriptRaw: transcript,
-          transcriptEn: translated
-        };
-
-        state.lastOriginalText = translated;
-        state.lastText = translated;
-        state.lastVision = null;
-
-        if (!state.activeForm) {
-          if (statusEl) {
-            statusEl.classList.add("error");
-            statusEl.textContent = "No form in view to fill.";
-          }
-          return;
-        }
-
-        if (mappingsContainer) {
-          mappingsContainer.innerHTML = "";
-        }
-
-        var mappings = buildMappingsForActiveForm(translated, null);
-        state.mappings = mappings;
-
-        if (!mappings || !mappings.length) {
-          if (statusEl) {
-            statusEl.classList.remove("error");
-            statusEl.textContent =
-              'Heard: "' +
-              translated +
-              '". No automatic matches – text is available below.';
-          }
-          renderMappings(mappingsContainer, []);
-          applyBtn.classList.add("ac-btn-disabled");
-          undoBtn.classList.add("ac-btn-disabled");
-          return;
-        }
-
-        if (statusEl) {
-          statusEl.classList.remove("error");
-          statusEl.textContent =
-            'Heard: "' +
-            translated +
-            '". Review matches and tap Apply to fill the form.';
-        }
-
-        renderMappings(mappingsContainer, mappings);
-        applyBtn.classList.remove("ac-btn-disabled");
-        undoBtn.classList.add("ac-btn-disabled");
-      });
-    };
-
-    try {
-      rec.start();
-    } catch (e) {
-      if (statusEl) {
-        statusEl.classList.add("error");
-        statusEl.textContent =
-          "Could not start voice input. Please try again.";
-      }
-    }
-  }
-
-  // ---------- OCR image handling ----------
-
-  function handleImageFile(file, status, mappingsContainer, undoBtn, applyBtn) {
-    if (!file) return;
-    if (!state.activeForm) {
-      status.classList.add("error");
-      status.textContent =
-        "No form detected in view. Scroll to a form and try again.";
-      return;
-    }
-    status.classList.remove("error");
-    status.textContent = "Image captured. Running OCR / AI…";
-
-    var reader = new FileReader();
-    reader.onload = function (ev) {
-      var base64 = ev.target && ev.target.result;
-      if (!base64) {
-        status.classList.add("error");
-        status.textContent =
-          "Could not read the image. Please try again.";
-        return;
-      }
-      state.selectedFile = file;
-      callOcrApi(base64)
-        .then(function (data) {
-          if (!data || !data.success) {
-            status.classList.add("error");
-            status.textContent =
-              (data && data.error) ||
-              "Could not run OCR / AI. Please try again.";
-            return;
-          }
-
-          state.lastOriginalText = data.text || "";
-          state.lastText = data.text || "";
-          state.lastVision = data.vision || null;
-          state.voiceData = null;
-
-          var mappings = buildMappingsForActiveForm(
-            data.text || "",
-            data.vision || null
-          );
-          state.mappings = mappings || [];
-
-          if (!mappings || !mappings.length) {
-            mappingsContainer.innerHTML = "";
-            var empty = document.createElement("div");
-            empty.className = "ac-mappings-empty";
-            empty.textContent =
-              "OCR ran successfully but no obvious matches were found. You can still copy text from the app if needed.";
-            mappingsContainer.appendChild(empty);
-            status.classList.remove("error");
-            status.textContent =
-              "OCR complete, but no automatic matches. Check the form manually.";
-            applyBtn.classList.add("ac-btn-disabled");
-            undoBtn.classList.add("ac-btn-disabled");
-            return;
-          }
-
-          status.classList.remove("error");
-          status.textContent =
-            "OCR complete. Review the suggested matches and tap Apply to fill the form.";
-          renderMappings(mappingsContainer, mappings);
-          applyBtn.classList.remove("ac-btn-disabled");
-          undoBtn.classList.add("ac-btn-disabled");
-        })
-        .catch(function (err) {
-          console.error("AppyCrew OCR fetch error:", err);
-          status.classList.add("error");
-          status.textContent =
-            "Error calling OCR API. Please check your connection and try again.";
-        });
-    };
-    reader.onerror = function () {
-      status.classList.add("error");
-      status.textContent = "Could not read the image. Please try again.";
-    };
-    reader.readAsDataURL(file);
-  }
-
-  function callOcrApi(imageBase64) {
-    var base = detectApiBase();
-    var url = base + "/api/ocr";
-    var formType = detectFormType();
-    return fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        imageBase64: imageBase64,
-        formType: formType || null
-      })
-    }).then(function (res) {
-      return res.json();
-    });
-  }
-
-  function detectFormType() {
-    if (!state.activeForm) return null;
-    var t =
-      state.activeForm.getAttribute("data-appycrew-form-type") || "";
-    return t || null;
-  }
-
-  // ---------- Mapping logic ----------
-
-  var LOCATION_KEYWORDS = [
-    "Kitchen",
-    "Dining Room",
-    "lounge",
-    "living Room",
-    "living room",
-    "Hall",
-    "Hallway",
-    "Landing",
-    "Stairs",
-    "Bedroom",
-    "Master Bedroom",
-    "MBR",
-    "Main Bedroom",
-    "Guest Bedroom",
-    "Bathroom",
-    "Ensuite",
-    "Office",
-    "Study",
-    "Garage",
-    "Loft",
-    "Attic",
-    "Garden",
-    "Shed",
-    "Storage",
-    "Store",
-    "Cupboard"
-  ];
-
-  function normaliseLocationWord(w) {
-    var lw = w.toLowerCase();
-    if (lw === "mbr") return "master bedroom";
-    if (lw === "bedrm" || lw === "bed") return "bedroom";
-    return lw;
-  }
-
-  function extractLocationFromText(text) {
-    if (!text) return "";
-    var lower = text.toLowerCase();
-    for (var i = 0; i < LOCATION_KEYWORDS.length; i++) {
-      var key = LOCATION_KEYWORDS[i];
-      if (lower.indexOf(key) !== -1) {
-        return key;
-      }
-    }
-    return "";
-  }
-
-  var ITEM_KEYWORDS = [
-    "wardrobe",
-    "sofa",
-    "couch",
-    "table",
-    "dining table",
-    "chair",
-    "desk",
-    "bed",
-    "mattress",
-    "headboard",
-    "chest",
-    "drawers",
-    "chest of drawers",
-    "sideboard",
-    "cabinet",
-    "cupboard",
-    "bookcase",
-    "shelf",
-    "shelving",
-    "tv",
-    "television",
-    "picture",
-    "painting",
-    "mirror",
-    "lamp",
-    "box",
-    "carton",
-    "crate",
-    "ladder",
-    "bicycle",
-    "bike"
-  ];
-
-  function findItemsFromText(text) {
-    if (!text) return [];
-    var lower = text.toLowerCase();
-    var found = [];
-    for (var i = 0; i < ITEM_KEYWORDS.length; i++) {
-      var it = ITEM_KEYWORDS[i];
-      if (lower.indexOf(it) !== -1 && found.indexOf(it) === -1) {
-        found.push(it);
-      }
-    }
-    return found;
-  }
-
-  function extractQty(text) {
-    if (!text) return null;
-    var m = text.match(/\b(\d{1,3})\s*(x|pcs?|pieces?)?\b/i);
-    if (!m) return null;
-    return m[1];
-  }
-
-  function buildDescription(text, vision, item, location, qty) {
-    var visionDesc =
-      (vision && vision.description) || (vision && vision.itemDescription);
-    var visionColour = vision && (vision.colour || vision.color);
-    var visionItem = (vision && vision.item) || item || "";
-
-    if (visionDesc || visionColour || visionItem) {
-      var base = visionDesc || "";
-      var colour = visionColour || "";
-      var itemWord = visionItem || "";
-      if (!base && colour) base = colour;
-
-      var desc = (base || "").toString().trim();
-
-      if (itemWord && desc) {
-        var itemWords = itemWord
-          .toLowerCase()
-          .split(/\s+/)
-          .filter(Boolean);
-        var descWords = desc.split(/\s+/);
-        descWords = descWords.filter(function (w) {
-          return itemWords.indexOf(w.toLowerCase()) === -1;
-        });
-        desc = descWords.join(" ").trim();
-      }
-
-      if (desc) {
-        var background = [
-          "wall",
-          "floor",
-          "room",
-          "door",
-          "corner",
-          "window",
-          "garage",
-          "garden",
-          "drive",
-          "street",
-          "outside",
-          "inside",
-          "against",
-          "leaning",
-          "mounted",
-          "stairs",
-          "landing"
-        ];
-        var words = desc.split(/\s+/);
-        words = words.filter(function (w) {
-          return background.indexOf(w.toLowerCase()) === -1;
-        });
-        desc = words.join(" ").trim();
-      }
-
-      if (desc) {
-        desc = desc
-          .split(/\s+/)
-          .slice(0, 4)
-          .join(" ");
-      }
-
-      if ((!desc || !desc.trim()) && colour) {
-        desc = colour.toString().trim();
-      }
-
-      return desc || "";
-    }
-
-    if (!text) return "";
-    if (text.length > 140 || text.indexOf("\n") !== -1) {
-      return text;
-    }
-
-    var descText = text;
-    if (qty) {
-      var reQty = new RegExp("\\b" + qty + "\\b", "ig");
-      descText = descText.replace(reQty, " ");
-    }
-    if (item) {
-      var reItem = new RegExp(
-        "\\b" + escapeRegex(item) + "\\b",
-        "ig"
-      );
-      descText = descText.replace(reItem, " ");
-    }
-    if (location) {
-      var reLoc = new RegExp(
-        "\\b" + escapeRegex(location) + "\\b",
-        "ig"
-      );
-      descText = descText.replace(reLoc, " ");
-    }
-    descText = descText
-      .replace(/\b[xX]\b/g, " ")
-      .replace(/[,:;()-]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-
-    return descText || text;
-  }
-
-  function escapeRegex(str) {
-    return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  }
-
-  function buildMappingsForActiveForm(text, vision) {
-    if (!state.activeForm) return [];
-    var form = state.activeForm;
-
-    var voice = state.voiceData || null;
-    var lowerText = (text || "").toLowerCase();
-    var items = findItemsFromText(text || "");
-    var locationFromText = extractLocationFromText(text || "");
-    var qty = extractQty(text || "");
-    var mainItem =
-      (voice && voice.item) ||
-      (items && items.length ? items[0] : "") ||
-      (vision && vision.item) ||
-      "";
-    var mainLoc =
-      (voice && voice.location) || locationFromText || "";
-    var description = buildDescription(
-      text || "",
-      vision,
-      mainItem,
-      mainLoc,
-      qty
-    );
-    var notes = voice && voice.notes ? voice.notes : "";
-
-    var fields = getCandidateFields(form);
-    var mappings = [];
-
-    for (var i = 0; i < fields.length; i++) {
-      var meta = fields[i];
-      var val = chooseValueForField(
-        meta,
-        {
-          text: text || "",
-          lowerText: lowerText,
-          mainItem: mainItem,
-          mainLoc: mainLoc,
-          qty: qty,
-          description: description,
-          notes: notes
-        },
-        voice
-      );
-      if (!val && val !== 0) continue;
-      var preview = String(val).trim();
-      if (!preview) continue;
-      mappings.push({
-        el: meta.el,
-        label: meta.label,
-        typeHint: meta.typeHint,
-        value: preview,
-        checked: true
-      });
-    }
-
-    return mappings;
-  }
-
   function getCandidateFields(form) {
-    var els = Array.prototype.slice.call(
+    const els = Array.prototype.slice.call(
       form.querySelectorAll("input, textarea, select")
     );
-    var out = [];
-    var seen = new Set();
+    const out = [];
+    const seen = new Set();
 
-    for (var i = 0; i < els.length; i++) {
-      var el = els[i];
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i];
       if (!isElementVisible(el)) continue;
       if (el.disabled) continue;
       if (el.type === "hidden") continue;
 
-      var key = el.tagName + ":" + (el.name || el.id || i);
+      const key = el.tagName + ":" + (el.name || el.id || i);
       if (seen.has(key)) continue;
       seen.add(key);
 
-      var meta = buildFieldMeta(el);
+      const meta = buildFieldMeta(el);
       out.push(meta);
     }
 
@@ -1195,344 +299,574 @@
   }
 
   function buildFieldMeta(el) {
-    var labelText = "";
-    var id = el.id;
+    let labelText = "";
+    const id = el.id;
+    
     if (id) {
-      var lab = document.querySelector('label[for="' + id + '"]');
+      const lab = document.querySelector('label[for="' + id + '"]');
       if (lab && lab.textContent) {
         labelText = lab.textContent.trim();
       }
     }
+    
     if (!labelText) {
-      var p = el.parentElement;
+      const p = el.parentElement;
       if (p && p.tagName.toLowerCase() === "label") {
         labelText = p.textContent.trim();
       }
     }
+    
     if (!labelText) {
-      var prev = el.previousElementSibling;
-      if (
-        prev &&
-        prev.tagName.toLowerCase() === "label" &&
-        prev.textContent
-      ) {
+      const prev = el.previousElementSibling;
+      if (prev && prev.tagName.toLowerCase() === "label" && prev.textContent) {
         labelText = prev.textContent.trim();
       }
     }
 
-    var placeholder =
-      (el.getAttribute("placeholder") || "").trim();
-    var dataLabel =
-      (el.getAttribute("data-label") || "").trim();
-    var allLabel = [labelText, placeholder, dataLabel]
-      .filter(Boolean)
-      .join(" / ");
+    const placeholder = (el.getAttribute("placeholder") || "").trim();
+    const dataLabel = (el.getAttribute("data-label") || "").trim();
+    const allLabel = [labelText, placeholder, dataLabel].filter(Boolean).join(" / ");
 
-    var typeHint = el.getAttribute("data-appycrew-type") || "";
-    typeHint = typeHint.trim().toLowerCase();
+    const typeHint = (el.getAttribute("data-appycrew-type") || "").trim().toLowerCase();
 
     return {
       el: el,
       label: allLabel || el.name || el.id || "Field",
-      labelLower: (allLabel || "")
-        .toString()
-        .toLowerCase(),
+      labelLower: (allLabel || "").toString().toLowerCase(),
       typeHint: typeHint
     };
   }
 
-  function chooseValueForField(meta, ctx, voice) {
-    var label = meta.labelLower || "";
-    var hint = meta.typeHint || "";
-
-    // Priority 1: explicit hints
-    if (hint === "item") {
-      if (voice && voice.item) return voice.item;
-      if (ctx.mainItem) return ctx.mainItem;
-      return "";
-    }
-    if (hint === "location") {
-      if (voice && voice.location) return voice.location;
-      if (ctx.mainLoc) return ctx.mainLoc;
-      return "";
-    }
-    if (hint === "qty" || hint === "quantity") {
-      if (ctx.qty) return ctx.qty;
-      return "";
-    }
-    if (hint === "description") {
-      if (voice && voice.description) return voice.description;
-      if (ctx.description) return ctx.description;
-      return "";
-    }
-    if (hint === "notes") {
-      if (voice && voice.notes) return voice.notes;
-      return ctx.text || "";
-    }
-    if (hint === "name") {
-      var lines = (ctx.text || "").split(/\r?\n/);
-      var first = (lines[0] || "").trim();
-      var second = (lines[1] || "").trim();
-      return first || second || "";
-    }
-    if (hint === "job-id" || hint === "id") {
-      var m = ctx.text.match(/\b[A-Z0-9\-]{4,}\b/i);
-      return (m && m[0]) || "";
-    }
-
-    // Priority 2: label-based heuristics
-    if (label.indexOf("item") !== -1) {
-      if (voice && voice.item) return voice.item;
-      if (ctx.mainItem) return ctx.mainItem;
-    }
-    if (
-      label.indexOf("location") !== -1 ||
-      label.indexOf("room") !== -1 ||
-      label.indexOf("site") !== -1
-    ) {
-      if (voice && voice.location) return voice.location;
-      if (ctx.mainLoc) return ctx.mainLoc;
-    }
-    if (
-      label.indexOf("qty") !== -1 ||
-      label.indexOf("quantity") !== -1 ||
-      label.indexOf("no of") !== -1
-    ) {
-      if (ctx.qty) return ctx.qty;
-    }
-    if (
-      label.indexOf("description") !== -1 ||
-      label.indexOf("details") !== -1
-    ) {
-      if (voice && voice.description) return voice.description;
-      if (ctx.description) return ctx.description;
-    }
-    if (
-      label.indexOf("notes") !== -1 ||
-      label.indexOf("additional") !== -1
-    ) {
-      if (voice && voice.notes) return voice.notes;
-      return ctx.text || "";
-    }
-    if (
-      label.indexOf("client") !== -1 ||
-      label.indexOf("customer") !== -1
-    ) {
-      var lineClient = findLineAfterLabel(ctx.text, [
-        "client",
-        "customer"
-      ]);
-      return lineClient;
-    }
-    if (
-      label.indexOf("surveyor") !== -1 ||
-      label.indexOf("estimator") !== -1
-    ) {
-      var lineSurveyor = findLineAfterLabel(ctx.text, [
-        "surveyor",
-        "estimator"
-      ]);
-      return lineSurveyor;
-    }
-    if (
-      label.indexOf("driver") !== -1 ||
-      label.indexOf("porter") !== -1
-    ) {
-      var lineDriver = findLineAfterLabel(ctx.text, ["driver"]);
-      return lineDriver;
-    }
-    if (
-      label.indexOf("job") !== -1 ||
-      label.indexOf("reference") !== -1
-    ) {
-      var m2 = ctx.text.match(/\b[A-Z0-9\-]{4,}\b/i);
-      return (m2 && m2[0]) || "";
-    }
-
-    // Fallback: nothing
-    return "";
+  // Field synonyms for semantic matching
+  function getFieldSynonyms(fieldType) {
+    const synonymMap = {
+      item: ['item', 'product', 'object', 'article', 'furniture', 'name', 'type', 'what'],
+      location: ['location', 'room', 'place', 'where', 'area', 'site', 'position'],
+      quantity: ['qty', 'quantity', 'count', 'number', 'amount', 'how many', 'no of', 'no.'],
+      description: ['description', 'details', 'notes', 'info', 'condition', 'appearance', 'desc'],
+      notes: ['notes', 'comments', 'remarks', 'additional', 'extra', 'other']
+    };
+    
+    return synonymMap[fieldType] || [];
   }
 
-  function findLineAfterLabel(text, labels) {
-    if (!text) return "";
-    var lines = text.split(/\r?\n/);
-    for (var i = 0; i < lines.length; i++) {
-      var lower = lines[i].toLowerCase();
-      for (var j = 0; j < labels.length; j++) {
-        if (lower.indexOf(labels[j]) !== -1) {
-          var next = (lines[i + 1] || "").trim();
-          if (next) return next;
+  // Calculate field match score
+  function calculateFieldMatchScore(fieldMeta, candidate) {
+    let score = 0;
+    const label = fieldMeta.labelLower;
+    const candidateType = candidate.type;
+    
+    // Exact type hint = highest confidence
+    if (fieldMeta.typeHint === candidateType) {
+      score += 10;
+    }
+    
+    // Semantic label matching
+    const labelSynonyms = getFieldSynonyms(candidateType);
+    for (const synonym of labelSynonyms) {
+      if (label.includes(synonym)) {
+        score += 5;
+      }
+    }
+    
+    // Fuzzy matching
+    const labelWords = label.split(/\s+/);
+    for (const word of labelWords) {
+      for (const synonym of labelSynonyms) {
+        const distance = levenshtein(word, synonym);
+        if (distance <= 2) {
+          score += Math.max(0, 3 - distance);
         }
       }
     }
-    return "";
+    
+    return score;
   }
 
-  // ---------- Apply / Undo ----------
+  // ========== DATA EXTRACTION ==========
 
-  function renderMappings(container, mappings) {
-    if (!container) return;
-    container.innerHTML = "";
+  const LOCATION_KEYWORDS = [
+    "kitchen", "dining", "lounge", "living", "living room", "hall", "hallway",
+    "landing", "stairs", "bedroom", "master bedroom", "mbr", "main bedroom",
+    "guest bedroom", "bathroom", "ensuite", "office", "study", "garage",
+    "loft", "attic", "garden", "shed", "storage", "store", "cupboard"
+  ];
 
-    if (!mappings || !mappings.length) {
-      var empty = document.createElement("div");
-      empty.className = "ac-mappings-empty";
-      empty.textContent =
-        "No automatic matches. Scan again or adjust the photo / voice input.";
-      container.appendChild(empty);
-      return;
+  const ITEM_KEYWORDS = [
+    "wardrobe", "sofa", "couch", "table", "dining table", "chair", "desk",
+    "bed", "mattress", "headboard", "chest", "drawers", "chest of drawers",
+    "sideboard", "cabinet", "cupboard", "bookcase", "shelf", "shelving",
+    "tv", "television", "picture", "painting", "mirror", "lamp", "box",
+    "carton", "crate", "ladder", "bicycle", "bike"
+  ];
+
+  function extractStructuredData(text, vision, voice) {
+    const extracted = {
+      item: null,
+      quantity: null,
+      location: null,
+      description: null,
+      notes: null,
+      confidence: {}
+    };
+    
+    // Voice data has highest confidence
+    if (voice) {
+      extracted.item = voice.item;
+      extracted.location = voice.location;
+      extracted.description = voice.description;
+      extracted.notes = voice.notes;
+      extracted.confidence = { item: 0.95, location: 0.95, description: 0.9, notes: 0.9 };
+      return extracted;
     }
+    
+    // Vision data
+    if (vision && vision.item) {
+      extracted.item = vision.item;
+      extracted.confidence.item = 0.85;
+      
+      if (vision.description) {
+        extracted.description = vision.description;
+        extracted.confidence.description = 0.8;
+      }
+    }
+    
+    // OCR text extraction
+    const qtyMatch = text.match(/\b(\d{1,3})\s*[xX×]?\s*(pcs?|pieces?|items?|boxes?)?\b/i);
+    if (qtyMatch) {
+      extracted.quantity = qtyMatch[1];
+      extracted.confidence.quantity = 0.9;
+    }
+    
+    if (!extracted.location) {
+      const loc = fuzzyMatch(text, LOCATION_KEYWORDS);
+      if (loc) {
+        extracted.location = loc;
+        extracted.confidence.location = 0.8;
+      }
+    }
+    
+    if (!extracted.item) {
+      const item = fuzzyMatch(text, ITEM_KEYWORDS);
+      if (item) {
+        extracted.item = item;
+        extracted.confidence.item = 0.75;
+      }
+    }
+    
+    if (!extracted.description) {
+      extracted.description = buildSmartDescription(text, extracted);
+      extracted.confidence.description = 0.6;
+    }
+    
+    return extracted;
+  }
 
-    for (var i = 0; i < mappings.length; i++) {
-      (function (m) {
-        var row = document.createElement("div");
-        row.className = "ac-map-row";
+  function buildSmartDescription(text, extracted) {
+    let desc = text;
+    
+    if (extracted.item) {
+      const itemRegex = new RegExp('\\b' + escapeRegex(extracted.item) + '\\b', 'gi');
+      desc = desc.replace(itemRegex, '');
+    }
+    
+    if (extracted.location) {
+      const locRegex = new RegExp('\\b' + escapeRegex(extracted.location) + '\\b', 'gi');
+      desc = desc.replace(locRegex, '');
+    }
+    
+    if (extracted.quantity) {
+      const qtyRegex = new RegExp('\\b' + extracted.quantity + '\\s*[xX×]?\\s*(pcs?|pieces?)?\\b', 'gi');
+      desc = desc.replace(qtyRegex, '');
+    }
+    
+    desc = desc
+      .replace(/\n+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .replace(/^[,;:\-\s]+/, '')
+      .replace(/[,;:\-\s]+$/, '')
+      .trim();
+    
+    return desc || text;
+  }
 
-        var checkbox = document.createElement("input");
-        checkbox.type = "checkbox";
-        checkbox.className = "ac-map-check";
-        checkbox.checked = m.checked !== false;
-        checkbox.addEventListener("change", function () {
-          m.checked = checkbox.checked;
+  function escapeRegex(str) {
+    return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  // ========== MAPPING WITH MULTI-PASS ==========
+
+  function buildMappingsWithMultiPass(text, vision, voice) {
+    const extracted = extractStructuredData(text, vision, voice);
+    const fields = getCandidateFields(state.activeForm);
+    
+    // Pass 1: Type hints
+    const pass1 = matchByTypeHints(fields, extracted);
+    
+    // Pass 2: Semantic labels
+    const pass2 = matchBySemanticLabels(fields, extracted, pass1);
+    
+    // Combine and deduplicate
+    const allMappings = [...pass1, ...pass2];
+    const uniqueMappings = deduplicateMappings(allMappings);
+    
+    uniqueMappings.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+    
+    return uniqueMappings;
+  }
+
+  function matchByTypeHints(fields, extracted) {
+    const mappings = [];
+    const usedFields = new Set();
+    
+    for (const field of fields) {
+      if (!field.typeHint || usedFields.has(field.el)) continue;
+      
+      const value = extracted[field.typeHint];
+      if (value) {
+        mappings.push({
+          el: field.el,
+          label: field.label,
+          typeHint: field.typeHint,
+          value: value,
+          confidence: extracted.confidence?.[field.typeHint] || 0.95,
+          checked: true,
+          method: 'type-hint'
         });
-
-        var main = document.createElement("div");
-        main.className = "ac-map-main";
-
-        var lab = document.createElement("div");
-        lab.className = "ac-map-label";
-        lab.textContent = m.label;
-
-        var preview = document.createElement("div");
-        preview.className = "ac-map-preview";
-        preview.textContent = m.value;
-
-        main.appendChild(lab);
-        main.appendChild(preview);
-
-        row.appendChild(checkbox);
-        row.appendChild(main);
-
-        container.appendChild(row);
-      })(mappings[i]);
+        usedFields.add(field.el);
+      }
     }
+    
+    return mappings;
   }
 
-  function snapshotCurrentValues(mappings) {
-    var out = [];
-    for (var i = 0; i < mappings.length; i++) {
-      var el = mappings[i].el;
-      if (!el) continue;
-      out.push({
-        el: el,
-        value: readElementValue(el)
-      });
-    }
-    state.lastApplied = out;
-  }
-
-  function restoreLastApplied() {
-    if (!state.lastApplied) return;
-    for (var i = 0; i < state.lastApplied.length; i++) {
-      var item = state.lastApplied[i];
-      if (!item.el) continue;
-      writeElementValue(item.el, item.value);
-    }
-  }
-
-  function applyMappings(mappings) {
-    if (!mappings || !mappings.length) return;
-    snapshotCurrentValues(mappings);
-
-    for (var i = 0; i < mappings.length; i++) {
-      var m = mappings[i];
-      if (!m.el) continue;
-      writeElementValue(m.el, m.value);
-    }
-  }
-
-  function readElementValue(el) {
-    var tag = el.tagName.toLowerCase();
-    if (tag === "select") {
-      return el.value;
-    }
-    if (tag === "input" && el.type === "radio") {
-      return el.checked;
-    }
-    return el.value;
-  }
-
-  function writeElementValue(el, value) {
-    var tag = el.tagName.toLowerCase();
-
-    if (tag === "select") {
-      var bestOption = null;
-      var bestScore = -1;
-      for (var i = 0; i < el.options.length; i++) {
-        var opt = el.options[i];
-        var score = 0;
-        var v = (opt.value || "").toLowerCase();
-        var t = (opt.text || "").toLowerCase();
-        var want = String(value).toLowerCase();
-        if (v === want || t === want) score = 3;
-        else if (v.indexOf(want) !== -1 || t.indexOf(want) !== -1)
-          score = 2;
-        else if (want.indexOf(t) !== -1 || want.indexOf(v) !== -1)
-          score = 1;
-        if (score > bestScore) {
-          bestScore = score;
-          bestOption = opt;
+  function matchBySemanticLabels(fields, extracted, existingMappings) {
+    const mappings = [];
+    const usedFields = new Set(existingMappings.map(m => m.el));
+    const usedValues = new Set(existingMappings.map(m => m.value));
+    
+    for (const field of fields) {
+      if (usedFields.has(field.el)) continue;
+      
+      for (const [key, value] of Object.entries(extracted)) {
+        if (key === 'confidence' || !value || usedValues.has(value)) continue;
+        
+        const score = calculateFieldMatchScore(field, { type: key, value });
+        
+        if (score > 5) {
+          mappings.push({
+            el: field.el,
+            label: field.label,
+            typeHint: key,
+            value: value,
+            confidence: Math.min(score / 15, 0.9),
+            checked: true,
+            method: 'semantic'
+          });
+          usedFields.add(field.el);
+          usedValues.add(value);
+          break;
         }
       }
-      if (bestOption) {
-        el.value = bestOption.value;
-        el.dispatchEvent(
-          new Event("input", { bubbles: true })
-        );
-        el.dispatchEvent(
-          new Event("change", { bubbles: true })
-        );
-      }
-      return;
     }
-
-    if (tag === "input" && el.type === "radio") {
-      el.checked = !!value;
-      el.dispatchEvent(
-        new Event("input", { bubbles: true })
-      );
-      el.dispatchEvent(
-        new Event("change", { bubbles: true })
-      );
-      return;
-    }
-
-    var proto =
-      Object.getOwnPropertyDescriptor(el.__proto__, "value") ||
-      Object.getOwnPropertyDescriptor(
-        HTMLInputElement.prototype,
-        "value"
-      ) ||
-      Object.getOwnPropertyDescriptor(
-        HTMLTextAreaElement.prototype,
-        "value"
-      );
-
-    if (proto && proto.set) {
-      proto.set.call(el, value);
-    } else {
-      el.value = value;
-    }
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    el.dispatchEvent(new Event("change", { bubbles: true }));
+    
+    return mappings;
   }
 
-  // ---------- Boot ----------
+  function deduplicateMappings(mappings) {
+    const seen = new Map();
+    
+    for (const mapping of mappings) {
+      const key = (mapping.el.name || mapping.el.id) + '_' + mapping.value;
+      const existing = seen.get(key);
+      
+      if (!existing || (mapping.confidence || 0) > (existing.confidence || 0)) {
+        seen.set(key, mapping);
+      }
+    }
+    
+    return Array.from(seen.values());
+  }
 
-  ready(function () {
-    injectStyles();
-    collectForms();
-    setupMutationObserver();
-    createFab();
-  });
-})();
+  // ========== STYLES ==========
+
+  function injectStyles() {
+    if (document.getElementById(PANEL_ID + "-styles")) return;
+    
+    const css = `
+/* FAB Styles */
+#${FAB_ID} {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 2147483647;
+  width: 56px;
+  height: 56px;
+  border-radius: 28px;
+  border: none;
+  background: #111827;
+  color: white;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.2), 0 0 0 1px rgba(0,0,0,0.05);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+#${FAB_ID}:hover {
+  transform: translateY(-2px) scale(1.05);
+  box-shadow: 0 20px 35px rgba(0,0,0,0.25);
+}
+
+#${FAB_ID}:active {
+  transform: translateY(0) scale(0.98);
+}
+
+#${FAB_ID}.ac-fab-hidden {
+  transform: translateY(100px) scale(0.8);
+  opacity: 0;
+  pointer-events: none;
+}
+
+#${FAB_ID} svg {
+  width: 24px;
+  height: 24px;
+  fill: currentColor;
+}
+
+#${FAB_ID}.ac-scanning {
+  background: #6366f1;
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+#${FAB_ID}.ac-listening {
+  background: #ec4899;
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 currentColor; }
+  50% { box-shadow: 0 0 0 20px transparent; }
+}
+
+/* Panel */
+#${PANEL_ID} {
+  position: fixed;
+  right: 20px;
+  bottom: 90px;
+  width: 380px;
+  max-width: calc(100vw - 40px);
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  font-family: system-ui, -apple-system, sans-serif;
+  z-index: 2147483647;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(10px) scale(0.95);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+#${PANEL_ID}.ac-open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+
+#${PANEL_ID} .ac-header {
+  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  padding: 16px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+#${PANEL_ID} .ac-title {
+  color: white;
+}
+
+#${PANEL_ID} .ac-title-main {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+#${PANEL_ID} .ac-title-sub {
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+#${PANEL_ID} .ac-close {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(255,255,255,0.1);
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+}
+
+#${PANEL_ID} .ac-close:hover {
+  background: rgba(255,255,255,0.2);
+}
+
+#${PANEL_ID} .ac-body {
+  padding: 20px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+#${PANEL_ID} .ac-mappings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#${PANEL_ID} .ac-map-row {
+  display: flex;
+  gap: 12px;
+  padding: 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  transition: all 0.2s;
+}
+
+#${PANEL_ID} .ac-map-row:hover {
+  border-color: #6366f1;
+  box-shadow: 0 4px 12px rgba(99,102,241,0.1);
+}
+
+#${PANEL_ID} .ac-map-check {
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  accent-color: #6366f1;
+  cursor: pointer;
+}
+
+#${PANEL_ID} .ac-map-main {
+  flex: 1;
+  min-width: 0;
+}
+
+#${PANEL_ID} .ac-map-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+#${PANEL_ID} .ac-map-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e293b;
+  text-transform: capitalize;
+}
+
+#${PANEL_ID} .ac-map-confidence {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+#${PANEL_ID} .ac-confidence-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+#${PANEL_ID} .ac-map-value {
+  font-size: 13px;
+  color: #475569;
+  word-break: break-word;
+}
+
+#${PANEL_ID} .ac-footer {
+  padding: 16px 20px;
+  background: #f8fafc;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+#${PANEL_ID} .ac-btn {
+  padding: 10px 20px;
+  border-radius: 8px;
+  border: none;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+#${PANEL_ID} .ac-btn-primary {
+  background: #6366f1;
+  color: white;
+  flex: 1;
+}
+
+#${PANEL_ID} .ac-btn-primary:hover {
+  background: #4f46e5;
+  transform: translateY(-1px);
+}
+
+#${PANEL_ID} .ac-btn-ghost {
+  background: transparent;
+  color: #64748b;
+}
+
+#${PANEL_ID} .ac-btn-ghost:hover {
+  background: #e2e8f0;
+}
+
+/* Toast Notifications */
+.ac-toast {
+  background: white;
+  border-radius: 12px;
+  padding: 14px 18px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 250px;
+  max-width: 350px;
+  opacity: 0;
+  transform: translateX(400px);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  pointer-events: auto;
+}
+
+.ac-toast-show {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.ac-toast-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.ac-toast-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.ac-toast-message {
+  font-size: 14px;
+  color: #1e293b;
+  font-weight: 500;
+}
+
+.ac-toast
