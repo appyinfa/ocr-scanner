@@ -36,7 +36,9 @@
     lastVision: null,
     voiceData: null,
     isListening: false,
-    speechRecognition: null,
+    mediaRecorder: null,
+    audioStream: null,
+    recordingTimeout: null,
     isPanelOpen: false,
     isProcessing: false,
     fabVisible: true,
@@ -1058,36 +1060,34 @@
     }
   }
 
-  // ========== VOICE INPUT ==========
+  // ========== VOICE INPUT (Server-side Speech-to-Text) ==========
 
-  // Detect iOS
-  function isIOS() {
-    return /iPad|iPhone|iPod/.test(navigator.userAgent) || 
-           (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  // Check if MediaRecorder is supported
+  function isMediaRecorderSupported() {
+    return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
   }
 
-  function initSpeechRecognition() {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      console.warn('[AppyCrew OCR] Speech recognition not supported');
-      return null;
+  // Get best supported audio MIME type
+  function getSupportedMimeType() {
+    const types = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/ogg;codecs=opus',
+      'audio/ogg',
+      'audio/mp4',
+      'audio/aac',
+      'audio/wav'
+    ];
+    
+    for (const type of types) {
+      if (MediaRecorder.isTypeSupported(type)) {
+        console.log('[AppyCrew OCR] Using audio format:', type);
+        return type;
+      }
     }
     
-    try {
-      const recognition = new SpeechRecognition();
-      
-      // iOS Safari works better with these settings
-      recognition.continuous = false;
-      recognition.interimResults = !isIOS(); // iOS doesn't handle interim well
-      recognition.maxAlternatives = 1;
-      recognition.lang = navigator.language || 'en-US';
-      
-      console.log('[AppyCrew OCR] Speech recognition initialized, iOS:', isIOS());
-      return recognition;
-    } catch (e) {
-      console.error('[AppyCrew OCR] Failed to init speech recognition:', e);
-      return null;
-    }
+    // Fallback
+    return 'audio/webm';
   }
 
   function startVoiceInput() {
@@ -1097,155 +1097,189 @@
       return;
     }
 
-    // Check for HTTPS (required on iOS)
-    if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+    // Check for HTTPS
+    if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
       showToast('Voice requires HTTPS connection', 'error');
-      console.error('[AppyCrew OCR] Voice input requires HTTPS');
       return;
     }
 
-    // Always create a fresh recognition instance for iOS
-    // iOS has issues reusing the same instance
-    if (isIOS() || !state.speechRecognition) {
-      state.speechRecognition = initSpeechRecognition();
-    }
-    
-    if (!state.speechRecognition) {
-      showToast('Voice not supported on this browser', 'error');
+    // Check for MediaRecorder support
+    if (!isMediaRecorderSupported()) {
+      showToast('Voice recording not supported', 'error');
       return;
     }
 
-    // Request microphone permission first on iOS
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      navigator.mediaDevices.getUserMedia({ audio: true })
-        .then(() => {
-          console.log('[AppyCrew OCR] Microphone permission granted');
-          actuallyStartListening();
-        })
-        .catch((err) => {
-          console.error('[AppyCrew OCR] Microphone permission denied:', err);
-          showToast('Microphone access denied', 'error');
-        });
-    } else {
-      // Fallback for older browsers
-      actuallyStartListening();
-    }
+    // Request microphone permission
+    navigator.mediaDevices.getUserMedia({ 
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        sampleRate: 48000
+      } 
+    })
+    .then(stream => {
+      startRecording(stream);
+    })
+    .catch(err => {
+      console.error('[AppyCrew OCR] Microphone error:', err);
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        showToast('Microphone access denied. Check browser settings.', 'error');
+      } else if (err.name === 'NotFoundError') {
+        showToast('No microphone found', 'error');
+      } else {
+        showToast('Could not access microphone', 'error');
+      }
+    });
   }
 
-  function actuallyStartListening() {
-    const recognition = state.speechRecognition;
-    if (!recognition) return;
-
+  function startRecording(stream) {
     state.isListening = true;
     updateFabState();
     
-    let finalTranscript = '';
-    let hasResult = false;
+    const mimeType = getSupportedMimeType();
+    const chunks = [];
     
-    // Clear any previous handlers
-    recognition.onresult = null;
-    recognition.onend = null;
-    recognition.onerror = null;
-    recognition.onspeechend = null;
-    recognition.onnomatch = null;
-
-    recognition.onresult = (event) => {
-      hasResult = true;
-      let interimTranscript = '';
-      
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalTranscript += transcript + ' ';
-          console.log('[AppyCrew OCR] Final transcript:', transcript);
-        } else {
-          interimTranscript += transcript;
-        }
-      }
-      
-      // Show interim results (not on iOS)
-      if (interimTranscript && !isIOS()) {
-        showToast(`Heard: "${interimTranscript}"`, 'info', 1500);
-      }
-    };
-
-    recognition.onspeechend = () => {
-      console.log('[AppyCrew OCR] Speech ended');
-      // iOS sometimes needs manual stop
-      if (isIOS()) {
-        try { recognition.stop(); } catch(e) {}
-      }
-    };
-
-    recognition.onend = () => {
-      console.log('[AppyCrew OCR] Recognition ended, hasResult:', hasResult);
-      state.isListening = false;
-      updateFabState();
-      
-      if (finalTranscript.trim()) {
-        processVoiceInput(finalTranscript.trim());
-      } else if (!hasResult) {
-        showToast('No speech detected. Tap and speak clearly.', 'info');
-      }
-    };
-    
-    recognition.onerror = (event) => {
-      console.error('[AppyCrew OCR] Speech error:', event.error);
-      state.isListening = false;
-      updateFabState();
-      
-      // Provide helpful error messages
-      const errorMessages = {
-        'not-allowed': 'Microphone access denied. Check browser settings.',
-        'no-speech': 'No speech detected. Try again.',
-        'network': 'Network error. Check your connection.',
-        'audio-capture': 'No microphone found.',
-        'aborted': 'Voice input cancelled.',
-        'service-not-allowed': 'Voice service not available on this device.'
-      };
-      
-      const message = errorMessages[event.error] || `Voice error: ${event.error}`;
-      showToast(message, 'error');
-    };
-
-    recognition.onnomatch = () => {
-      console.log('[AppyCrew OCR] No match found');
-      showToast('Could not understand. Try again.', 'info');
-    };
-
-    // Show listening indicator
-    showToast(isIOS() ? 'Listening... Tap when done' : 'Listening... Speak now', 'info', 0);
-    
-    // Start recognition
     try {
-      recognition.start();
-      console.log('[AppyCrew OCR] Recognition started');
+      state.mediaRecorder = new MediaRecorder(stream, { 
+        mimeType: mimeType,
+        audioBitsPerSecond: 128000
+      });
     } catch (e) {
-      console.error('[AppyCrew OCR] Failed to start recognition:', e);
-      state.isListening = false;
-      updateFabState();
-      
-      // On iOS, if it fails, suggest the user try again
-      if (isIOS()) {
-        showToast('Tap the mic button and speak', 'info');
-      } else {
-        showToast('Could not start voice input', 'error');
-      }
+      // Fallback without options
+      console.warn('[AppyCrew OCR] MediaRecorder fallback:', e);
+      state.mediaRecorder = new MediaRecorder(stream);
     }
+    
+    state.audioStream = stream;
+    
+    state.mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) {
+        chunks.push(e.data);
+      }
+    };
+    
+    state.mediaRecorder.onstop = async () => {
+      // Stop all tracks
+      stream.getTracks().forEach(track => track.stop());
+      
+      if (chunks.length === 0) {
+        showToast('No audio recorded', 'info');
+        state.isListening = false;
+        updateFabState();
+        return;
+      }
+      
+      // Create blob from chunks
+      const audioBlob = new Blob(chunks, { type: mimeType });
+      console.log('[AppyCrew OCR] Recorded audio:', audioBlob.size, 'bytes');
+      
+      // Convert to base64 and send to API
+      await processAudioBlob(audioBlob, mimeType);
+    };
+    
+    state.mediaRecorder.onerror = (e) => {
+      console.error('[AppyCrew OCR] Recording error:', e);
+      showToast('Recording failed', 'error');
+      stopVoiceInput();
+    };
+    
+    // Start recording
+    state.mediaRecorder.start();
+    console.log('[AppyCrew OCR] Recording started');
+    
+    // Show recording indicator with stop instruction
+    showToast('🎤 Recording... Tap again to stop', 'info', 0);
+    
+    // Auto-stop after 30 seconds
+    state.recordingTimeout = setTimeout(() => {
+      if (state.isListening) {
+        console.log('[AppyCrew OCR] Auto-stopping after 30s');
+        stopVoiceInput();
+      }
+    }, 30000);
   }
 
   function stopVoiceInput() {
-    if (state.speechRecognition) {
-      try {
-        if (state.isListening) {
-          state.speechRecognition.stop();
-        }
-      } catch (e) {
-        console.warn('[AppyCrew OCR] Error stopping recognition:', e);
-      }
+    // Clear timeout
+    if (state.recordingTimeout) {
+      clearTimeout(state.recordingTimeout);
+      state.recordingTimeout = null;
     }
+    
+    // Stop media recorder
+    if (state.mediaRecorder && state.mediaRecorder.state !== 'inactive') {
+      state.mediaRecorder.stop();
+    }
+    
+    // Stop audio stream
+    if (state.audioStream) {
+      state.audioStream.getTracks().forEach(track => track.stop());
+      state.audioStream = null;
+    }
+    
     state.isListening = false;
     updateFabState();
+  }
+
+  async function processAudioBlob(audioBlob, mimeType) {
+    showToast('Processing speech...', 'loading', 0);
+    
+    try {
+      // Convert blob to base64
+      const base64Audio = await blobToBase64(audioBlob);
+      
+      // Call speech API
+      const apiBase = detectApiBase();
+      const endpoint = `${apiBase}/api/speech`;
+      
+      console.log('[AppyCrew OCR] Calling Speech API:', endpoint);
+      
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({
+          audio: base64Audio,
+          mimeType: mimeType,
+          languageCode: navigator.language || 'en-US'
+        })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || `Speech API error: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      console.log('[AppyCrew OCR] Speech result:', data);
+      
+      if (!data.text) {
+        showToast('No speech detected. Try again.', 'info');
+        return;
+      }
+      
+      // Process the transcribed text
+      showToast(`Heard: "${data.text}"`, 'success', 2000);
+      processVoiceInput(data.text);
+      
+    } catch (error) {
+      console.error('[AppyCrew OCR] Speech processing error:', error);
+      showToast(`Speech failed: ${error.message}`, 'error');
+    } finally {
+      state.isListening = false;
+      updateFabState();
+    }
+  }
+
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
   }
 
   function processVoiceInput(transcript) {
@@ -1398,7 +1432,7 @@
     
     fab.addEventListener('click', handleFabClick);
     
-    // Speed dial button handlers - use direct handlers for iOS compatibility
+    // Speed dial button handlers
     const scanBtn = speedDial.querySelector('.ac-speed-dial-scan');
     const voiceBtn = speedDial.querySelector('.ac-speed-dial-voice');
     
@@ -1409,21 +1443,12 @@
       openFileInput();
     });
     
-    // Voice button needs direct event handler for iOS
     voiceBtn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
       closeFabMenu();
-      // Call startVoiceInput directly from user gesture (required for iOS)
       startVoiceInput();
     });
-    
-    // Touch events for iOS
-    voiceBtn.addEventListener('touchend', (e) => {
-      e.preventDefault();
-      closeFabMenu();
-      startVoiceInput();
-    }, { passive: false });
     
     fabContainer.appendChild(speedDial);
     fabContainer.appendChild(fab);
