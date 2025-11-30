@@ -1,872 +1,544 @@
-/**
- * AppyCrew OCR Widget v10 - Enhanced Edition
- * Complete integration of all improvements:
- * - Smart field mapping with semantic similarity
- * - Modern UI with speed dial FAB
- * - Toast notifications
- * - Context-aware extraction
- * - Fuzzy matching & confidence scoring
- * - Progressive workflow
- * - Keyboard shortcuts
- * - Smart auto-hide
- * - Mobile-optimized
- */
+import React, { useState, useEffect, useRef } from 'react';
+import { Camera, Mic, HelpCircle, X, Check, Loader, ChevronRight } from 'lucide-react';
 
-(function () {
-  if (typeof window === "undefined") return;
-  if (window.__APPYCREW_OCR_WIDGET_INITED__) return;
-  window.__APPYCREW_OCR_WIDGET_INITED__ = true;
-
-  const PANEL_ID = "appycrew-ocr-panel";
-  const FAB_ID = "appycrew-ocr-fab";
-  const TOAST_CONTAINER_ID = "appycrew-toast-container";
-
-  const state = {
-    apiBase: null,
-    forms: [],
-    activeForm: null,
-    observer: null,
-    mappings: [],
-    lastApplied: null,
-    selectedFile: null,
-    lastOriginalText: "",
-    lastText: "",
-    lastVision: null,
-    voiceData: null,
+// Demo Component - Shows the complete widget in action
+export default function OCRWidgetDemo() {
+  const [formData, setFormData] = useState({
+    item: '',
+    quantity: '',
+    description: '',
+    location: ''
+  });
+  
+  const [widgetState, setWidgetState] = useState({
+    isOpen: false,
+    isScanning: false,
     isListening: false,
-    speechRecognition: null,
-    ui: null,
-    fieldClassifier: {
-      trainingData: [],
-      learn: function(fieldLabel, fieldType, correctValue) {
-        this.trainingData.push({
-          fieldLabel: fieldLabel.toLowerCase(),
-          fieldType: fieldType || 'text',
-          correctValue: String(correctValue).toLowerCase(),
-          timestamp: Date.now()
-        });
-        if (this.trainingData.length % 5 === 0) {
-          this.save();
-        }
-      },
-      save: function() {
-        try {
-          localStorage.setItem('appycrew_field_classifier', 
-            JSON.stringify(this.trainingData.slice(-100))
-          );
-        } catch (e) {
-          console.warn('Could not save field classifier:', e);
-        }
-      },
-      load: function() {
-        try {
-          const saved = localStorage.getItem('appycrew_field_classifier');
-          if (saved) {
-            this.trainingData = JSON.parse(saved);
-          }
-        } catch (e) {
-          console.warn('Could not load field classifier:', e);
-        }
-      }
-    }
+    mappings: [],
+    showToast: false,
+    toastMessage: '',
+    toastType: 'info'
+  });
+
+  // Simulate OCR scan
+  const handleScan = () => {
+    setWidgetState(prev => ({ ...prev, isScanning: true }));
+    
+    setTimeout(() => {
+      const mockMappings = [
+        { field: 'item', value: 'Wardrobe', confidence: 0.95, checked: true },
+        { field: 'quantity', value: '1', confidence: 0.90, checked: true },
+        { field: 'description', value: 'Oak wood, large', confidence: 0.85, checked: true },
+        { field: 'location', value: 'Master bedroom', confidence: 0.92, checked: true }
+      ];
+      
+      setWidgetState(prev => ({
+        ...prev,
+        isScanning: false,
+        mappings: mockMappings,
+        isOpen: true
+      }));
+      
+      showToast('Found 4 matches! Review and apply.', 'success');
+    }, 2000);
   };
 
-  // ========== UTILITIES ==========
-
-  function ready(fn) {
-    if (document.readyState === "complete" || document.readyState === "interactive") {
-      setTimeout(fn, 0);
-    } else {
-      document.addEventListener("DOMContentLoaded", fn);
-    }
-  }
-
-  function detectApiBase() {
-    if (state.apiBase) return state.apiBase;
-    if (window.APPYCREW_OCR_API_BASE) {
-      state.apiBase = String(window.APPYCREW_OCR_API_BASE).replace(/\/+$/, "");
-      return state.apiBase;
-    }
-    state.apiBase = window.location.origin;
-    return state.apiBase;
-  }
-
-  // Levenshtein distance for fuzzy matching
-  function levenshtein(a, b) {
-    const matrix = [];
-    for (let i = 0; i <= b.length; i++) {
-      matrix[i] = [i];
-    }
-    for (let j = 0; j <= a.length; j++) {
-      matrix[0][j] = j;
-    }
-    for (let i = 1; i <= b.length; i++) {
-      for (let j = 1; j <= a.length; j++) {
-        if (b.charAt(i - 1) === a.charAt(j - 1)) {
-          matrix[i][j] = matrix[i - 1][j - 1];
-        } else {
-          matrix[i][j] = Math.min(
-            matrix[i - 1][j - 1] + 1,
-            matrix[i][j - 1] + 1,
-            matrix[i - 1][j] + 1
-          );
-        }
-      }
-    }
-    return matrix[b.length][a.length];
-  }
-
-  // Semantic similarity (Jaccard)
-  function semanticSimilarity(text1, text2) {
-    const tokens1 = new Set(text1.toLowerCase().split(/\W+/).filter(Boolean));
-    const tokens2 = new Set(text2.toLowerCase().split(/\W+/).filter(Boolean));
+  // Simulate voice input
+  const handleVoice = () => {
+    setWidgetState(prev => ({ ...prev, isListening: true }));
     
-    const intersection = new Set([...tokens1].filter(x => tokens2.has(x)));
-    const union = new Set([...tokens1, ...tokens2]);
-    
-    return intersection.size / (union.size || 1);
-  }
-
-  // Fuzzy match against keywords
-  function fuzzyMatch(text, keywords, threshold = 2) {
-    const lower = text.toLowerCase();
-    const words = lower.split(/\s+/);
-    
-    for (const keyword of keywords) {
-      if (lower.includes(keyword)) return keyword;
+    setTimeout(() => {
+      const mockMappings = [
+        { field: 'item', value: 'Chair', confidence: 0.88, checked: true },
+        { field: 'quantity', value: '2', confidence: 0.85, checked: true },
+        { field: 'description', value: 'Blue fabric dining chairs', confidence: 0.80, checked: true },
+        { field: 'location', value: 'Dining room', confidence: 0.87, checked: true }
+      ];
       
-      for (const word of words) {
-        if (levenshtein(word, keyword) <= threshold) {
-          return keyword;
-        }
-      }
-    }
-    return null;
-  }
+      setWidgetState(prev => ({
+        ...prev,
+        isListening: false,
+        mappings: mockMappings,
+        isOpen: true
+      }));
+      
+      showToast('Voice captured! Review matches.', 'success');
+    }, 3000);
+  };
 
-  // Image compression
-  async function compressImage(file, maxWidth = 1200, quality = 0.85) {
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          let width = img.width;
-          let height = img.height;
+  // Apply mappings to form
+  const handleApply = () => {
+    const newFormData = { ...formData };
+    widgetState.mappings
+      .filter(m => m.checked)
+      .forEach(m => {
+        newFormData[m.field] = m.value;
+      });
+    
+    setFormData(newFormData);
+    setWidgetState(prev => ({ ...prev, isOpen: false, mappings: [] }));
+    showToast('Applied to form!', 'success');
+  };
+
+  // Show toast notification
+  const showToast = (message, type = 'info') => {
+    setWidgetState(prev => ({
+      ...prev,
+      showToast: true,
+      toastMessage: message,
+      toastType: type
+    }));
+    
+    setTimeout(() => {
+      setWidgetState(prev => ({ ...prev, showToast: false }));
+    }, 3000);
+  };
+
+  // Toggle mapping checkbox
+  const toggleMapping = (index) => {
+    setWidgetState(prev => ({
+      ...prev,
+      mappings: prev.mappings.map((m, i) => 
+        i === index ? { ...m, checked: !m.checked } : m
+      )
+    }));
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-4 md:p-8">
+      {/* Header */}
+      <div className="max-w-4xl mx-auto mb-8">
+        <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-green-100 text-green-800 rounded-full text-xs font-semibold mb-4">
+          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+          AppyCrew OCR Widget v10 - Enhanced
+        </div>
+        <h1 className="text-3xl md:text-4xl font-bold text-slate-900 mb-2">
+          Smart Form Filling Demo
+        </h1>
+        <p className="text-slate-600">
+          Click the camera or microphone to auto-fill this inventory form
+        </p>
+      </div>
+
+      {/* Demo Form */}
+      <div className="max-w-4xl mx-auto grid md:grid-cols-2 gap-6">
+        <div className="bg-white rounded-2xl shadow-lg p-6 md:p-8 border border-slate-200">
+          <h2 className="text-xl font-semibold text-slate-900 mb-6">
+            Inventory Item Form
+          </h2>
           
-          if (width > maxWidth) {
-            height *= maxWidth / width;
-            width = maxWidth;
-          }
-          
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', quality));
-        };
-        img.src = e.target.result;
-      };
-      reader.readAsDataURL(file);
-    });
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                Item
+              </label>
+              <select
+                value={formData.item}
+                onChange={(e) => setFormData({ ...formData, item: e.target.value })}
+                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all"
+              >
+                <option value="">Select item...</option>
+                <option value="Chair">Chair</option>
+                <option value="Table">Table</option>
+                <option value="Wardrobe">Wardrobe</option>
+                <option value="Sofa">Sofa</option>
+                <option value="Box">Box</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                Quantity
+              </label>
+              <input
+                type="number"
+                value={formData.quantity}
+                onChange={(e) => setFormData({ ...formData, quantity: e.target.value })}
+                placeholder="0"
+                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                Description
+              </label>
+              <textarea
+                value={formData.description}
+                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                placeholder="Colour, condition, notes..."
+                rows={3}
+                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all resize-none"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                Location
+              </label>
+              <select
+                value={formData.location}
+                onChange={(e) => setFormData({ ...formData, location: e.target.value })}
+                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all"
+              >
+                <option value="">Select location...</option>
+                <option value="Living room">Living room</option>
+                <option value="Master bedroom">Master bedroom</option>
+                <option value="Kitchen">Kitchen</option>
+                <option value="Dining room">Dining room</option>
+                <option value="Garage">Garage</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        {/* Instructions Panel */}
+        <div className="bg-gradient-to-br from-indigo-600 to-purple-700 rounded-2xl shadow-lg p-6 md:p-8 text-white">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-12 h-12 bg-white/20 rounded-xl flex items-center justify-center">
+              <HelpCircle className="w-6 h-6" />
+            </div>
+            <h2 className="text-xl font-semibold">How It Works</h2>
+          </div>
+
+          <div className="space-y-4">
+            <div className="flex gap-3">
+              <div className="w-8 h-8 bg-white/20 rounded-full flex items-center justify-center flex-shrink-0 font-semibold">
+                1
+              </div>
+              <div>
+                <h3 className="font-semibold mb-1">Scan a Photo</h3>
+                <p className="text-white/80 text-sm">
+                  Click the camera button and take a photo of your inventory sheet or item label
+                </p>
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <div className="w-8 h-8 bg-white/20 rounded-full flex items-center justify-center flex-shrink-0 font-semibold">
+                2
+              </div>
+              <div>
+                <h3 className="font-semibold mb-1">Or Use Voice</h3>
+                <p className="text-white/80 text-sm">
+                  Click the microphone and say: "2 blue chairs, dining room"
+                </p>
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <div className="w-8 h-8 bg-white/20 rounded-full flex items-center justify-center flex-shrink-0 font-semibold">
+                3
+              </div>
+              <div>
+                <h3 className="font-semibold mb-1">Review & Apply</h3>
+                <p className="text-white/80 text-sm">
+                  Check the suggested matches and click Apply to fill the form instantly
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-6 p-4 bg-white/10 rounded-xl backdrop-blur-sm">
+            <div className="flex items-center gap-2 text-sm">
+              <span>💡</span>
+              <span className="text-white/90">
+                Keyboard shortcut: <kbd className="px-2 py-0.5 bg-white/20 rounded">Ctrl+Shift+S</kbd>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Speed Dial FAB */}
+      <SpeedDialFAB
+        onScan={handleScan}
+        onVoice={handleVoice}
+        isScanning={widgetState.isScanning}
+        isListening={widgetState.isListening}
+      />
+
+      {/* Review Panel */}
+      {widgetState.isOpen && (
+        <ReviewPanel
+          mappings={widgetState.mappings}
+          onClose={() => setWidgetState(prev => ({ ...prev, isOpen: false }))}
+          onApply={handleApply}
+          onToggle={toggleMapping}
+        />
+      )}
+
+      {/* Toast Notification */}
+      {widgetState.showToast && (
+        <Toast
+          message={widgetState.toastMessage}
+          type={widgetState.toastType}
+        />
+      )}
+    </div>
+  );
+}
+
+// Speed Dial Floating Action Button
+function SpeedDialFAB({ onScan, onVoice, isScanning, isListening }) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  return (
+    <>
+      {/* Backdrop */}
+      {isOpen && (
+        <div
+          className="fixed inset-0 bg-black/20 backdrop-blur-sm z-40 transition-opacity"
+          onClick={() => setIsOpen(false)}
+        />
+      )}
+
+      {/* Speed Dial Container */}
+      <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-3">
+        {/* Action Buttons */}
+        <div className={`flex flex-col items-end gap-3 transition-all duration-300 ${
+          isOpen ? 'opacity-100 scale-100' : 'opacity-0 scale-95 pointer-events-none'
+        }`}>
+          {/* Voice Button */}
+          <button
+            onClick={() => {
+              setIsOpen(false);
+              onVoice();
+            }}
+            disabled={isListening}
+            className="group relative"
+          >
+            <div className="w-12 h-12 bg-pink-500 hover:bg-pink-600 rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-110 active:scale-95">
+              {isListening ? (
+                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <Mic className="w-5 h-5 text-white" />
+              )}
+            </div>
+            <span className="absolute right-14 top-1/2 -translate-y-1/2 px-3 py-1.5 bg-slate-900 text-white text-sm rounded-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+              Voice Input
+            </span>
+          </button>
+
+          {/* Scan Button */}
+          <button
+            onClick={() => {
+              setIsOpen(false);
+              onScan();
+            }}
+            disabled={isScanning}
+            className="group relative"
+          >
+            <div className="w-12 h-12 bg-indigo-600 hover:bg-indigo-700 rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-110 active:scale-95">
+              {isScanning ? (
+                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <Camera className="w-5 h-5 text-white" />
+              )}
+            </div>
+            <span className="absolute right-14 top-1/2 -translate-y-1/2 px-3 py-1.5 bg-slate-900 text-white text-sm rounded-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+              Scan Photo
+            </span>
+          </button>
+
+          {/* Help Button */}
+          <button
+            onClick={() => setIsOpen(false)}
+            className="group relative"
+          >
+            <div className="w-12 h-12 bg-amber-500 hover:bg-amber-600 rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-110 active:scale-95">
+              <HelpCircle className="w-5 h-5 text-white" />
+            </div>
+            <span className="absolute right-14 top-1/2 -translate-y-1/2 px-3 py-1.5 bg-slate-900 text-white text-sm rounded-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+              Help & Tips
+            </span>
+          </button>
+        </div>
+
+        {/* Main FAB */}
+        <button
+          onClick={() => setIsOpen(!isOpen)}
+          className={`w-14 h-14 rounded-full shadow-2xl flex items-center justify-center transition-all hover:scale-110 active:scale-95 ${
+            isScanning ? 'bg-indigo-600 animate-pulse' :
+            isListening ? 'bg-pink-500 animate-pulse' :
+            'bg-slate-900 hover:bg-slate-800'
+          }`}
+        >
+          {isScanning || isListening ? (
+            <div className="w-6 h-6 border-3 border-white border-t-transparent rounded-full animate-spin" />
+          ) : (
+            <div className={`transition-transform duration-300 ${isOpen ? 'rotate-45' : 'rotate-0'}`}>
+              {isOpen ? (
+                <X className="w-6 h-6 text-white" />
+              ) : (
+                <Camera className="w-6 h-6 text-white" />
+              )}
+            </div>
+          )}
+        </button>
+
+        {/* Label */}
+        {!isOpen && !isScanning && !isListening && (
+          <div className="absolute -top-12 right-0 px-4 py-2 bg-slate-900 text-white text-sm rounded-lg shadow-lg whitespace-nowrap animate-bounce">
+            Click to scan
+            <div className="absolute -bottom-1 right-4 w-2 h-2 bg-slate-900 rotate-45" />
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+// Review Panel
+function ReviewPanel({ mappings, onClose, onApply, onToggle }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center p-4">
+      {/* Backdrop */}
+      <div
+        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+        onClick={onClose}
+      />
+
+      {/* Panel */}
+      <div className="relative w-full max-w-lg bg-white rounded-2xl shadow-2xl overflow-hidden animate-slideUp">
+        {/* Header */}
+        <div className="bg-gradient-to-r from-slate-900 to-slate-800 px-6 py-4 flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-white">Review Matches</h3>
+            <p className="text-slate-300 text-sm">Check accuracy before applying</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
+          >
+            <X className="w-5 h-5 text-white" />
+          </button>
+        </div>
+
+        {/* Mappings List */}
+        <div className="p-6 max-h-96 overflow-y-auto">
+          <div className="space-y-3">
+            {mappings.map((mapping, index) => (
+              <div
+                key={index}
+                className="flex items-start gap-3 p-4 bg-slate-50 rounded-xl border border-slate-200 hover:border-indigo-300 transition-colors"
+              >
+                <input
+                  type="checkbox"
+                  checked={mapping.checked}
+                  onChange={() => onToggle(index)}
+                  className="mt-1 w-5 h-5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                />
+                
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-semibold text-slate-900 text-sm capitalize">
+                      {mapping.field}
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <div className={`w-2 h-2 rounded-full ${
+                        mapping.confidence > 0.9 ? 'bg-green-500' :
+                        mapping.confidence > 0.8 ? 'bg-yellow-500' : 'bg-orange-500'
+                      }`} />
+                      <span className={`text-xs font-medium ${
+                        mapping.confidence > 0.9 ? 'text-green-700' :
+                        mapping.confidence > 0.8 ? 'text-yellow-700' : 'text-orange-700'
+                      }`}>
+                        {Math.round(mapping.confidence * 100)}%
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-slate-700 break-words">
+                    {mapping.value}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-3">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-slate-700 hover:bg-slate-200 rounded-lg font-medium transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onApply}
+            className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-colors flex items-center gap-2"
+          >
+            Apply to Form
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Toast Notification
+function Toast({ message, type = 'info' }) {
+  const icons = {
+    success: <Check className="w-5 h-5" />,
+    error: <X className="w-5 h-5" />,
+    info: <HelpCircle className="w-5 h-5" />,
+    loading: <Loader className="w-5 h-5 animate-spin" />
+  };
+
+  const colors = {
+    success: 'bg-green-50 border-green-500 text-green-900',
+    error: 'bg-red-50 border-red-500 text-red-900',
+    info: 'bg-blue-50 border-blue-500 text-blue-900',
+    loading: 'bg-indigo-50 border-indigo-500 text-indigo-900'
+  };
+
+  return (
+    <div className="fixed top-6 right-6 z-[60] animate-slideIn">
+      <div className={`flex items-center gap-3 px-4 py-3 rounded-xl shadow-2xl border-l-4 ${colors[type]} max-w-sm`}>
+        <div className="flex-shrink-0">
+          {icons[type]}
+        </div>
+        <p className="text-sm font-medium">
+          {message}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// Add animations to Tailwind
+const style = document.createElement('style');
+style.textContent = `
+  @keyframes slideUp {
+    from {
+      opacity: 0;
+      transform: translateY(100%);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
-  // ========== TOAST NOTIFICATIONS ==========
-
-  function showToast(message, type = 'info', duration = 3000) {
-    let container = document.getElementById(TOAST_CONTAINER_ID);
-    if (!container) {
-      container = document.createElement('div');
-      container.id = TOAST_CONTAINER_ID;
-      container.style.cssText = `
-        position: fixed;
-        top: 20px;
-        right: 20px;
-        z-index: 2147483648;
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        pointer-events: none;
-      `;
-      document.body.appendChild(container);
+  @keyframes slideIn {
+    from {
+      opacity: 0;
+      transform: translateX(100%);
     }
-
-    const toast = document.createElement('div');
-    toast.className = 'ac-toast ac-toast-' + type;
-    
-    const icons = {
-      success: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>',
-      error: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>',
-      info: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>',
-      loading: '<div class="ac-spinner-sm"></div>'
-    };
-    
-    toast.innerHTML = `
-      <div class="ac-toast-icon">${icons[type]}</div>
-      <div class="ac-toast-message">${message}</div>
-    `;
-    
-    container.appendChild(toast);
-    
-    setTimeout(() => toast.classList.add('ac-toast-show'), 10);
-    
-    if (duration > 0) {
-      setTimeout(() => {
-        toast.classList.remove('ac-toast-show');
-        setTimeout(() => toast.remove(), 300);
-      }, duration);
+    to {
+      opacity: 1;
+      transform: translateX(0);
     }
-    
-    return toast;
   }
 
-  // ========== FIELD DETECTION & MAPPING ==========
-
-  function isElementVisible(el) {
-    if (!el || !el.getBoundingClientRect) return false;
-    const rect = el.getBoundingClientRect();
-    const vh = window.innerHeight || document.documentElement.clientHeight;
-    if (rect.bottom <= 0 || rect.top >= vh) return false;
-    const height = rect.height || 0;
-    if (!height) return true;
-    const visibleTop = Math.max(rect.top, 0);
-    const visibleBottom = Math.min(rect.bottom, vh);
-    const visible = Math.max(0, visibleBottom - visibleTop);
-    return visible / height >= 0.3;
+  .animate-slideUp {
+    animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   }
 
-  function collectForms() {
-    const forms = Array.prototype.slice.call(document.querySelectorAll("form"));
-    state.forms = forms;
-    state.activeForm = pickActiveForm(forms);
-    updateFabVisibility();
+  .animate-slideIn {
+    animation: slideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   }
-
-  function pickActiveForm(forms) {
-    if (!forms || !forms.length) return null;
-    const vh = window.innerHeight || document.documentElement.clientHeight;
-    let best = null;
-    let bestScore = -1;
-    
-    for (let i = 0; i < forms.length; i++) {
-      const f = forms[i];
-      const rect = f.getBoundingClientRect();
-      const height = rect.height || 0;
-      if (height <= 0) continue;
-      
-      const visibleTop = Math.max(rect.top, 0);
-      const visibleBottom = Math.min(rect.bottom, vh);
-      const visible = Math.max(0, visibleBottom - visibleTop);
-      
-      let score = visible;
-      
-      // Bonus for having type hints
-      if (f.querySelector('[data-appycrew-type]')) {
-        score += 1000;
-      }
-      
-      if (score > bestScore) {
-        bestScore = score;
-        best = f;
-      }
-    }
-    return best;
-  }
-
-  function getCandidateFields(form) {
-    const els = Array.prototype.slice.call(
-      form.querySelectorAll("input, textarea, select")
-    );
-    const out = [];
-    const seen = new Set();
-
-    for (let i = 0; i < els.length; i++) {
-      const el = els[i];
-      if (!isElementVisible(el)) continue;
-      if (el.disabled) continue;
-      if (el.type === "hidden") continue;
-
-      const key = el.tagName + ":" + (el.name || el.id || i);
-      if (seen.has(key)) continue;
-      seen.add(key);
-
-      const meta = buildFieldMeta(el);
-      out.push(meta);
-    }
-
-    return out;
-  }
-
-  function buildFieldMeta(el) {
-    let labelText = "";
-    const id = el.id;
-    
-    if (id) {
-      const lab = document.querySelector('label[for="' + id + '"]');
-      if (lab && lab.textContent) {
-        labelText = lab.textContent.trim();
-      }
-    }
-    
-    if (!labelText) {
-      const p = el.parentElement;
-      if (p && p.tagName.toLowerCase() === "label") {
-        labelText = p.textContent.trim();
-      }
-    }
-    
-    if (!labelText) {
-      const prev = el.previousElementSibling;
-      if (prev && prev.tagName.toLowerCase() === "label" && prev.textContent) {
-        labelText = prev.textContent.trim();
-      }
-    }
-
-    const placeholder = (el.getAttribute("placeholder") || "").trim();
-    const dataLabel = (el.getAttribute("data-label") || "").trim();
-    const allLabel = [labelText, placeholder, dataLabel].filter(Boolean).join(" / ");
-
-    const typeHint = (el.getAttribute("data-appycrew-type") || "").trim().toLowerCase();
-
-    return {
-      el: el,
-      label: allLabel || el.name || el.id || "Field",
-      labelLower: (allLabel || "").toString().toLowerCase(),
-      typeHint: typeHint
-    };
-  }
-
-  // Field synonyms for semantic matching
-  function getFieldSynonyms(fieldType) {
-    const synonymMap = {
-      item: ['item', 'product', 'object', 'article', 'furniture', 'name', 'type', 'what'],
-      location: ['location', 'room', 'place', 'where', 'area', 'site', 'position'],
-      quantity: ['qty', 'quantity', 'count', 'number', 'amount', 'how many', 'no of', 'no.'],
-      description: ['description', 'details', 'notes', 'info', 'condition', 'appearance', 'desc'],
-      notes: ['notes', 'comments', 'remarks', 'additional', 'extra', 'other']
-    };
-    
-    return synonymMap[fieldType] || [];
-  }
-
-  // Calculate field match score
-  function calculateFieldMatchScore(fieldMeta, candidate) {
-    let score = 0;
-    const label = fieldMeta.labelLower;
-    const candidateType = candidate.type;
-    
-    // Exact type hint = highest confidence
-    if (fieldMeta.typeHint === candidateType) {
-      score += 10;
-    }
-    
-    // Semantic label matching
-    const labelSynonyms = getFieldSynonyms(candidateType);
-    for (const synonym of labelSynonyms) {
-      if (label.includes(synonym)) {
-        score += 5;
-      }
-    }
-    
-    // Fuzzy matching
-    const labelWords = label.split(/\s+/);
-    for (const word of labelWords) {
-      for (const synonym of labelSynonyms) {
-        const distance = levenshtein(word, synonym);
-        if (distance <= 2) {
-          score += Math.max(0, 3 - distance);
-        }
-      }
-    }
-    
-    return score;
-  }
-
-  // ========== DATA EXTRACTION ==========
-
-  const LOCATION_KEYWORDS = [
-    "kitchen", "dining", "lounge", "living", "living room", "hall", "hallway",
-    "landing", "stairs", "bedroom", "master bedroom", "mbr", "main bedroom",
-    "guest bedroom", "bathroom", "ensuite", "office", "study", "garage",
-    "loft", "attic", "garden", "shed", "storage", "store", "cupboard"
-  ];
-
-  const ITEM_KEYWORDS = [
-    "wardrobe", "sofa", "couch", "table", "dining table", "chair", "desk",
-    "bed", "mattress", "headboard", "chest", "drawers", "chest of drawers",
-    "sideboard", "cabinet", "cupboard", "bookcase", "shelf", "shelving",
-    "tv", "television", "picture", "painting", "mirror", "lamp", "box",
-    "carton", "crate", "ladder", "bicycle", "bike"
-  ];
-
-  function extractStructuredData(text, vision, voice) {
-    const extracted = {
-      item: null,
-      quantity: null,
-      location: null,
-      description: null,
-      notes: null,
-      confidence: {}
-    };
-    
-    // Voice data has highest confidence
-    if (voice) {
-      extracted.item = voice.item;
-      extracted.location = voice.location;
-      extracted.description = voice.description;
-      extracted.notes = voice.notes;
-      extracted.confidence = { item: 0.95, location: 0.95, description: 0.9, notes: 0.9 };
-      return extracted;
-    }
-    
-    // Vision data
-    if (vision && vision.item) {
-      extracted.item = vision.item;
-      extracted.confidence.item = 0.85;
-      
-      if (vision.description) {
-        extracted.description = vision.description;
-        extracted.confidence.description = 0.8;
-      }
-    }
-    
-    // OCR text extraction
-    const qtyMatch = text.match(/\b(\d{1,3})\s*[xX×]?\s*(pcs?|pieces?|items?|boxes?)?\b/i);
-    if (qtyMatch) {
-      extracted.quantity = qtyMatch[1];
-      extracted.confidence.quantity = 0.9;
-    }
-    
-    if (!extracted.location) {
-      const loc = fuzzyMatch(text, LOCATION_KEYWORDS);
-      if (loc) {
-        extracted.location = loc;
-        extracted.confidence.location = 0.8;
-      }
-    }
-    
-    if (!extracted.item) {
-      const item = fuzzyMatch(text, ITEM_KEYWORDS);
-      if (item) {
-        extracted.item = item;
-        extracted.confidence.item = 0.75;
-      }
-    }
-    
-    if (!extracted.description) {
-      extracted.description = buildSmartDescription(text, extracted);
-      extracted.confidence.description = 0.6;
-    }
-    
-    return extracted;
-  }
-
-  function buildSmartDescription(text, extracted) {
-    let desc = text;
-    
-    if (extracted.item) {
-      const itemRegex = new RegExp('\\b' + escapeRegex(extracted.item) + '\\b', 'gi');
-      desc = desc.replace(itemRegex, '');
-    }
-    
-    if (extracted.location) {
-      const locRegex = new RegExp('\\b' + escapeRegex(extracted.location) + '\\b', 'gi');
-      desc = desc.replace(locRegex, '');
-    }
-    
-    if (extracted.quantity) {
-      const qtyRegex = new RegExp('\\b' + extracted.quantity + '\\s*[xX×]?\\s*(pcs?|pieces?)?\\b', 'gi');
-      desc = desc.replace(qtyRegex, '');
-    }
-    
-    desc = desc
-      .replace(/\n+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .replace(/^[,;:\-\s]+/, '')
-      .replace(/[,;:\-\s]+$/, '')
-      .trim();
-    
-    return desc || text;
-  }
-
-  function escapeRegex(str) {
-    return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  }
-
-  // ========== MAPPING WITH MULTI-PASS ==========
-
-  function buildMappingsWithMultiPass(text, vision, voice) {
-    const extracted = extractStructuredData(text, vision, voice);
-    const fields = getCandidateFields(state.activeForm);
-    
-    // Pass 1: Type hints
-    const pass1 = matchByTypeHints(fields, extracted);
-    
-    // Pass 2: Semantic labels
-    const pass2 = matchBySemanticLabels(fields, extracted, pass1);
-    
-    // Combine and deduplicate
-    const allMappings = [...pass1, ...pass2];
-    const uniqueMappings = deduplicateMappings(allMappings);
-    
-    uniqueMappings.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
-    
-    return uniqueMappings;
-  }
-
-  function matchByTypeHints(fields, extracted) {
-    const mappings = [];
-    const usedFields = new Set();
-    
-    for (const field of fields) {
-      if (!field.typeHint || usedFields.has(field.el)) continue;
-      
-      const value = extracted[field.typeHint];
-      if (value) {
-        mappings.push({
-          el: field.el,
-          label: field.label,
-          typeHint: field.typeHint,
-          value: value,
-          confidence: extracted.confidence?.[field.typeHint] || 0.95,
-          checked: true,
-          method: 'type-hint'
-        });
-        usedFields.add(field.el);
-      }
-    }
-    
-    return mappings;
-  }
-
-  function matchBySemanticLabels(fields, extracted, existingMappings) {
-    const mappings = [];
-    const usedFields = new Set(existingMappings.map(m => m.el));
-    const usedValues = new Set(existingMappings.map(m => m.value));
-    
-    for (const field of fields) {
-      if (usedFields.has(field.el)) continue;
-      
-      for (const [key, value] of Object.entries(extracted)) {
-        if (key === 'confidence' || !value || usedValues.has(value)) continue;
-        
-        const score = calculateFieldMatchScore(field, { type: key, value });
-        
-        if (score > 5) {
-          mappings.push({
-            el: field.el,
-            label: field.label,
-            typeHint: key,
-            value: value,
-            confidence: Math.min(score / 15, 0.9),
-            checked: true,
-            method: 'semantic'
-          });
-          usedFields.add(field.el);
-          usedValues.add(value);
-          break;
-        }
-      }
-    }
-    
-    return mappings;
-  }
-
-  function deduplicateMappings(mappings) {
-    const seen = new Map();
-    
-    for (const mapping of mappings) {
-      const key = (mapping.el.name || mapping.el.id) + '_' + mapping.value;
-      const existing = seen.get(key);
-      
-      if (!existing || (mapping.confidence || 0) > (existing.confidence || 0)) {
-        seen.set(key, mapping);
-      }
-    }
-    
-    return Array.from(seen.values());
-  }
-
-  // ========== STYLES ==========
-
-  function injectStyles() {
-    if (document.getElementById(PANEL_ID + "-styles")) return;
-    
-    const css = `
-/* FAB Styles */
-#${FAB_ID} {
-  position: fixed;
-  right: 20px;
-  bottom: 20px;
-  z-index: 2147483647;
-  width: 56px;
-  height: 56px;
-  border-radius: 28px;
-  border: none;
-  background: #111827;
-  color: white;
-  box-shadow: 0 10px 25px rgba(0,0,0,0.2), 0 0 0 1px rgba(0,0,0,0.05);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  font-family: system-ui, -apple-system, sans-serif;
-}
-
-#${FAB_ID}:hover {
-  transform: translateY(-2px) scale(1.05);
-  box-shadow: 0 20px 35px rgba(0,0,0,0.25);
-}
-
-#${FAB_ID}:active {
-  transform: translateY(0) scale(0.98);
-}
-
-#${FAB_ID}.ac-fab-hidden {
-  transform: translateY(100px) scale(0.8);
-  opacity: 0;
-  pointer-events: none;
-}
-
-#${FAB_ID} svg {
-  width: 24px;
-  height: 24px;
-  fill: currentColor;
-}
-
-#${FAB_ID}.ac-scanning {
-  background: #6366f1;
-  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-}
-
-#${FAB_ID}.ac-listening {
-  background: #ec4899;
-  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { box-shadow: 0 0 0 0 currentColor; }
-  50% { box-shadow: 0 0 0 20px transparent; }
-}
-
-/* Panel */
-#${PANEL_ID} {
-  position: fixed;
-  right: 20px;
-  bottom: 90px;
-  width: 380px;
-  max-width: calc(100vw - 40px);
-  background: white;
-  border-radius: 16px;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-  font-family: system-ui, -apple-system, sans-serif;
-  z-index: 2147483647;
-  overflow: hidden;
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(10px) scale(0.95);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-#${PANEL_ID}.ac-open {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateY(0) scale(1);
-}
-
-#${PANEL_ID} .ac-header {
-  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-  padding: 16px 20px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-#${PANEL_ID} .ac-title {
-  color: white;
-}
-
-#${PANEL_ID} .ac-title-main {
-  font-size: 16px;
-  font-weight: 600;
-  margin-bottom: 2px;
-}
-
-#${PANEL_ID} .ac-title-sub {
-  font-size: 12px;
-  opacity: 0.8;
-}
-
-#${PANEL_ID} .ac-close {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  border: none;
-  background: rgba(255,255,255,0.1);
-  color: white;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.2s;
-}
-
-#${PANEL_ID} .ac-close:hover {
-  background: rgba(255,255,255,0.2);
-}
-
-#${PANEL_ID} .ac-body {
-  padding: 20px;
-  max-height: 400px;
-  overflow-y: auto;
-}
-
-#${PANEL_ID} .ac-mappings {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-#${PANEL_ID} .ac-map-row {
-  display: flex;
-  gap: 12px;
-  padding: 14px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  transition: all 0.2s;
-}
-
-#${PANEL_ID} .ac-map-row:hover {
-  border-color: #6366f1;
-  box-shadow: 0 4px 12px rgba(99,102,241,0.1);
-}
-
-#${PANEL_ID} .ac-map-check {
-  width: 20px;
-  height: 20px;
-  margin-top: 2px;
-  accent-color: #6366f1;
-  cursor: pointer;
-}
-
-#${PANEL_ID} .ac-map-main {
-  flex: 1;
-  min-width: 0;
-}
-
-#${PANEL_ID} .ac-map-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 6px;
-}
-
-#${PANEL_ID} .ac-map-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: #1e293b;
-  text-transform: capitalize;
-}
-
-#${PANEL_ID} .ac-map-confidence {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  font-weight: 500;
-}
-
-#${PANEL_ID} .ac-confidence-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-}
-
-#${PANEL_ID} .ac-map-value {
-  font-size: 13px;
-  color: #475569;
-  word-break: break-word;
-}
-
-#${PANEL_ID} .ac-footer {
-  padding: 16px 20px;
-  background: #f8fafc;
-  border-top: 1px solid #e2e8f0;
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-#${PANEL_ID} .ac-btn {
-  padding: 10px 20px;
-  border-radius: 8px;
-  border: none;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-#${PANEL_ID} .ac-btn-primary {
-  background: #6366f1;
-  color: white;
-  flex: 1;
-}
-
-#${PANEL_ID} .ac-btn-primary:hover {
-  background: #4f46e5;
-  transform: translateY(-1px);
-}
-
-#${PANEL_ID} .ac-btn-ghost {
-  background: transparent;
-  color: #64748b;
-}
-
-#${PANEL_ID} .ac-btn-ghost:hover {
-  background: #e2e8f0;
-}
-
-/* Toast Notifications */
-.ac-toast {
-  background: white;
-  border-radius: 12px;
-  padding: 14px 18px;
-  box-shadow: 0 10px 30px rgba(0,0,0,0.15);
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 250px;
-  max-width: 350px;
-  opacity: 0;
-  transform: translateX(400px);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  pointer-events: auto;
-}
-
-.ac-toast-show {
-  opacity: 1;
-  transform: translateX(0);
-}
-
-.ac-toast-icon {
-  width: 20px;
-  height: 20px;
-  flex-shrink: 0;
-}
-
-.ac-toast-icon svg {
-  width: 100%;
-  height: 100%;
-}
-
-.ac-toast-message {
-  font-size: 14px;
-  color: #1e293b;
-  font-weight: 500;
-}
-
-.ac-toast
+`;
+document.head.appendChild(style);
