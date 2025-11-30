@@ -3,29 +3,49 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Your App</title>
+    <title>OCR Widget Test</title>
 </head>
 <body>
-    <!-- Your form here -->
-    <form data-appycrew-ocr="true">
-        <label>
-            Item
-            <select name="item" data-appycrew-type="item">
-                <option value="">Select...</option>
-                <option value="chair">Chair</option>
-                <option value="table">Table</option>
-            </select>
-        </label>
+    <div style="max-width: 600px; margin: 40px auto; padding: 20px;">
+        <h1>OCR Widget Demo</h1>
         
-        <label>
-            Quantity
-            <input type="number" name="qty" data-appycrew-type="quantity" />
-        </label>
-        
-        <!-- More fields... -->
-    </form>
+        <form data-appycrew-ocr="true">
+            <label style="display: block; margin-bottom: 15px;">
+                Item
+                <select name="item" data-appycrew-type="item" style="width: 100%; padding: 8px;">
+                    <option value="">Select...</option>
+                    <option value="chair">Chair</option>
+                    <option value="table">Table</option>
+                    <option value="wardrobe">Wardrobe</option>
+                    <option value="sofa">Sofa</option>
+                </select>
+            </label>
+            
+            <label style="display: block; margin-bottom: 15px;">
+                Quantity
+                <input type="number" name="qty" data-appycrew-type="quantity" 
+                       style="width: 100%; padding: 8px;" />
+            </label>
+            
+            <label style="display: block; margin-bottom: 15px;">
+                Description
+                <textarea name="description" data-appycrew-type="description" 
+                          style="width: 100%; padding: 8px;" rows="3"></textarea>
+            </label>
+            
+            <label style="display: block; margin-bottom: 15px;">
+                Location
+                <select name="location" data-appycrew-type="location" style="width: 100%; padding: 8px;">
+                    <option value="">Select...</option>
+                    <option value="living room">Living Room</option>
+                    <option value="bedroom">Bedroom</option>
+                    <option value="kitchen">Kitchen</option>
+                </select>
+            </label>
+        </form>
+    </div>
 
-    <!-- Load the widget at the end of body -->
-    <script src="./ocr-widget-enhanced.js"></script>
+    <!-- IMPORTANT: Load the widget script -->
+    <script src="/ocr-widget-enhanced.js"></script>
 </body>
 </html>
