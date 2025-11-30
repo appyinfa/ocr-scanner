@@ -1,506 +1,284 @@
-const OCR_API_URL =
-  process.env.OCR_SPACE_API_URL || "https://api.ocr.space/parse/image";
-const OCR_API_KEY = process.env.OCR_SPACE_API_KEY || null;
+/**
+ * AppyCrew OCR API Endpoint
+ * Vercel Serverless Function
+ * 
+ * Supports:
+ * - Google Cloud Vision API (primary)
+ * - OCR.space API (fallback)
+ * 
+ * Environment Variables Required:
+ * - GOOGLE_VISION_API_KEY (for Google Cloud Vision)
+ * - OCR_SPACE_API_KEY (for OCR.space fallback)
+ * 
+ * At least one API key must be configured.
+ */
 
-const GOOGLE_VISION_API_KEY = process.env.GOOGLE_VISION_API_KEY || null;
+// CORS headers for cross-origin requests
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  'Access-Control-Max-Age': '86400',
+};
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || null;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '10mb',
+    },
+  },
+};
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-1.5-flash";
-
-const VISION_PROVIDER = (process.env.VISION_PROVIDER || "openai").toLowerCase();
-const VISION_MODE = (process.env.VISION_MODE || "fallback").toLowerCase();
-
-const LOCATION_KEYWORDS = [
-  "living room",
-  "lounge",
-  "front room",
-  "sitting room",
-  "bathroom",
-  "toilet",
-  "wc",
-  "cloakroom",
-  "kitchen",
-  "dining room",
-  "hall",
-  "hallway",
-  "garage",
-  "loft",
-  "attic",
-  "office",
-  "study",
-  "bedroom 1",
-  "bedroom 2",
-  "bedroom 3",
-  "master bedroom",
-  "main bedroom",
-  "kids room",
-  "nursery"
-];
-
-const ITEM_KEYWORDS = [
-  "chair",
-  "armchair",
-  "dining chair",
-  "sofa",
-  "couch",
-  "table",
-  "coffee table",
-  "desk",
-  "wardrobe",
-  "chest of drawers",
-  "drawer",
-  "sideboard",
-  "mattress",
-  "bed",
-  "tv",
-  "television",
-  "monitor",
-  "fridge",
-  "freezer",
-  "fridge freezer",
-  "washing machine",
-  "dryer",
-  "tumble dryer",
-  "box",
-  "carton",
-  "mirror",
-  "lamp"
-];
-
-
-function stripBrandNoise(text) {
-  if (!text) return "";
-  const lowerBrands = [
-    "appycrew",
-    "fragile",
-    "handle with care",
-    "this way up",
-    "this side up",
-    "moving & storage",
-    "moving and storage"
-  ];
-
-  const lines = text.split(/\r?\n/);
-  const cleanedLines = [];
-
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line) continue;
-
-    const lower = line.toLowerCase();
-    const isBrandLine = lowerBrands.some((b) => lower.includes(b));
-    if (isBrandLine) continue;
-
-    cleanedLines.push(raw);
+export default async function handler(req, res) {
+  // Handle CORS preflight
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    return res.status(200).end();
   }
 
-  return cleanedLines.join("\n");
-}
-
-function parseBody(req) {
-  if (!req.body) return {};
-  if (typeof req.body === "string") {
-    try {
-      return JSON.parse(req.body);
-    } catch {
-      return {};
-    }
-  }
-  return req.body;
-}
-
-function shouldCallVision(text) {
-  if (VISION_MODE === "off") return false;
-  if (!text || !text.trim()) return true;
-  if (VISION_MODE === "always") return true;
-
-  const lower = text.toLowerCase();
-  const hasItem = ITEM_KEYWORDS.some((k) => lower.indexOf(k) !== -1);
-  const hasLocation = LOCATION_KEYWORDS.some((k) => lower.indexOf(k) !== -1);
-  if (hasItem || hasLocation) return false;
-  if (text.trim().length < 10) return true;
-  return false;
-}
-
-async function callOcrSpace(imageBase64) {
-  if (!OCR_API_KEY) {
-    return {
-      text:
-        "Demo mode: OCR_SPACE_API_KEY is not configured.\n" +
-        "Add your OCR.space API key in the Vercel project settings to enable real text OCR."
-    };
-  }
-
-  const params = new URLSearchParams();
-  params.append("base64Image", imageBase64);
-  params.append("language", "eng");
-  params.append("isTable", "true");
-  params.append("OCREngine", "2");
-
-  const response = await fetch(OCR_API_URL, {
-    method: "POST",
-    headers: { apikey: OCR_API_KEY },
-    body: params
+  // Set CORS headers for all responses
+  Object.entries(corsHeaders).forEach(([key, value]) => {
+    res.setHeader(key, value);
   });
 
-  const data = await response.json();
-
-  if (!response.ok || !data || data.IsErroredOnProcessing) {
-    const message =
-      (data && (data.ErrorMessage || data.ErrorDetails)) || "OCR API error";
-    throw new Error(message);
+  // Only allow POST
+  if (req.method !== 'POST') {
+    return res.status(405).json({ 
+      error: 'Method not allowed',
+      message: 'Use POST with { "image": "base64_data_url" }'
+    });
   }
 
-  let text = "";
-  if (Array.isArray(data.ParsedResults) && data.ParsedResults.length > 0) {
-    text = data.ParsedResults.map((r) => r.ParsedText || "").join("\n\n");
-  }
-  return { text: (text || "").trim() };
-}
+  try {
+    const { image } = req.body;
 
-
-async function callGoogleVision(imageBase64) {
-  if (!GOOGLE_VISION_API_KEY) return null;
-
-  let content = imageBase64 || "";
-  if (content.startsWith("data:")) {
-    const commaIndex = content.indexOf(",");
-    if (commaIndex !== -1) {
-      content = content.slice(commaIndex + 1);
+    if (!image) {
+      return res.status(400).json({ 
+        error: 'Missing image',
+        message: 'Request body must include "image" field with base64 data URL'
+      });
     }
-  }
 
-  const body = {
-    requests: [
-      {
-        image: { content },
-        features: [{ type: "DOCUMENT_TEXT_DETECTION" }]
+    // Extract base64 data from data URL
+    const base64Data = extractBase64(image);
+    if (!base64Data) {
+      return res.status(400).json({ 
+        error: 'Invalid image format',
+        message: 'Image must be a valid base64 data URL (e.g., data:image/jpeg;base64,...)'
+      });
+    }
+
+    let result = null;
+    let provider = null;
+
+    // Try Google Vision API first
+    if (process.env.GOOGLE_VISION_API_KEY) {
+      try {
+        result = await callGoogleVision(base64Data);
+        provider = 'google-vision';
+      } catch (error) {
+        console.error('Google Vision API error:', error.message);
       }
-    ]
-  };
-
-  const endpoint =
-    "https://vision.googleapis.com/v1/images:annotate?key=" +
-    encodeURIComponent(GOOGLE_VISION_API_KEY);
-
-  const resp = await fetch(endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
-  });
-
-  if (!resp.ok) {
-    let errText = "";
-    try {
-      errText = await resp.text();
-    } catch (e) {
-      errText = "";
     }
-    console.error(
-      "Google Vision HTTP error:",
-      resp.status,
-      errText && errText.slice ? errText.slice(0, 500) : errText
-    );
-    throw new Error("Google Vision HTTP " + resp.status);
-  }
 
-  const json = await resp.json();
-  const responses = json && json.responses ? json.responses : [];
-  if (!responses.length) {
-    return { text: "" };
-  }
+    // Fallback to OCR.space
+    if (!result && process.env.OCR_SPACE_API_KEY) {
+      try {
+        result = await callOcrSpace(base64Data);
+        provider = 'ocr-space';
+      } catch (error) {
+        console.error('OCR.space API error:', error.message);
+      }
+    }
 
-  const ann = responses[0] || {};
-  let text = "";
+    // If no API keys configured or all failed
+    if (!result) {
+      const hasGoogleKey = !!process.env.GOOGLE_VISION_API_KEY;
+      const hasOcrSpaceKey = !!process.env.OCR_SPACE_API_KEY;
+      
+      if (!hasGoogleKey && !hasOcrSpaceKey) {
+        return res.status(500).json({
+          error: 'No OCR service configured',
+          message: 'Set GOOGLE_VISION_API_KEY or OCR_SPACE_API_KEY in environment variables'
+        });
+      }
+      
+      return res.status(500).json({
+        error: 'OCR processing failed',
+        message: 'All OCR providers failed. Check API keys and try again.'
+      });
+    }
 
-  if (ann.fullTextAnnotation && ann.fullTextAnnotation.text) {
-    text = ann.fullTextAnnotation.text;
-  } else if (
-    Array.isArray(ann.textAnnotations) &&
-    ann.textAnnotations.length &&
-    ann.textAnnotations[0].description
-  ) {
-    text = ann.textAnnotations[0].description;
-  }
+    // Clean the result text
+    const cleanedText = cleanOcrText(result);
 
-  return { text: (text || "").trim() };
-}
-
-async function callOpenAIVision(imageBase64) {
-  if (!OPENAI_API_KEY) return null;
-
-  try {
-    const body = {
-      model: OPENAI_MODEL,
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a vision assistant for a moving company inventory system. " +
-            "Given a photo, identify the main object that would be added to an inventory, " +
-            "its dominant colour, and a short human-friendly description. " +
-            "Always respond with a JSON object with keys: item, colour, description."
-        },
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text:
-                "Look at this photo and extract inventory information. " +
-                'Respond ONLY with JSON. Example: {\"item\":\"chair\",\"colour\":\"blue\",\"description\":\"blue fabric chair\"}'
-            },
-            {
-              type: "image_url",
-              image_url: { url: imageBase64 }
-            }
-          ]
-        }
-      ]
-    };
-
-    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer " + OPENAI_API_KEY
-      },
-      body: JSON.stringify(body)
+    return res.status(200).json({
+      success: true,
+      text: cleanedText,
+      rawText: result,
+      provider: provider
     });
 
-    if (!resp.ok) {
-      const text = await resp.text();
-      console.error("OpenAI vision error HTTP:", resp.status, text);
-      return null;
-    }
-
-    const json = await resp.json();
-    const choice = json.choices && json.choices[0] && json.choices[0].message;
-    if (!choice || !choice.content) return null;
-
-    let parsed;
-    try {
-      parsed =
-        typeof choice.content === "string"
-          ? JSON.parse(choice.content)
-          : choice.content;
-    } catch (err) {
-      console.error("Failed to parse OpenAI JSON content:", err);
-      return null;
-    }
-
-    const item =
-      parsed.item || parsed.itemName || parsed.object || parsed.mainItem;
-    const colour =
-      parsed.colour || parsed.color || parsed.colourName || parsed.mainColour;
-    const description = parsed.description || parsed.summary || null;
-
-    if (!item && !colour && !description) return null;
-
-    return { item: item || "", colour: colour || "", description: description || "" };
-  } catch (err) {
-    console.error("AppyCrew OpenAI vision error:", err);
-    return null;
-  }
-}
-
-function extractBase64Data(imageBase64) {
-  if (!imageBase64 || typeof imageBase64 !== "string") return null;
-  const comma = imageBase64.indexOf(",");
-  if (comma === -1) return imageBase64;
-  return imageBase64.slice(comma + 1);
-}
-
-async function callGeminiVision(imageBase64) {
-  if (!GEMINI_API_KEY) return null;
-
-  try {
-    const base64Data = extractBase64Data(imageBase64);
-    if (!base64Data) return null;
-
-    const url =
-      "https://generativelanguage.googleapis.com/v1beta/models/" +
-      GEMINI_MODEL +
-      ":generateContent?key=" +
-      encodeURIComponent(GEMINI_API_KEY);
-
-    const body = {
-      contents: [
-        {
-          role: "user",
-          parts: [
-            {
-              text:
-                "You are a vision assistant for a moving company inventory system. " +
-                "Look at this image and respond with JSON describing the main inventory item. " +
-                'Use this exact JSON shape: {\"item\":\"chair\",\"colour\":\"blue\",\"description\":\"blue fabric chair\"}. ' +
-                "Use UK English for colour names."
-            },
-            {
-              inline_data: { mime_type: "image/jpeg", data: base64Data }
-            }
-          ]
-        }
-      ],
-      generationConfig: { response_mime_type: "application/json" }
-    };
-
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
+  } catch (error) {
+    console.error('OCR API Error:', error);
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: error.message || 'An unexpected error occurred'
     });
-
-    if (!resp.ok) {
-      const text = await resp.text();
-      console.error("Gemini vision error HTTP:", resp.status, text);
-      return null;
-    }
-
-    const json = await resp.json();
-    const candidates = json.candidates || [];
-    if (!candidates.length) return null;
-    const parts = (candidates[0].content && candidates[0].content.parts) || [];
-    if (!parts.length || !parts[0].text) return null;
-
-    let parsed;
-    try {
-      parsed =
-        typeof parts[0].text === "string"
-          ? JSON.parse(parts[0].text)
-          : parts[0].text;
-    } catch (err) {
-      console.error("Failed to parse Gemini JSON content:", err);
-      return null;
-    }
-
-    const item =
-      parsed.item || parsed.itemName || parsed.object || parsed.mainItem;
-    const colour =
-      parsed.colour || parsed.color || parsed.colourName || parsed.mainColour;
-    const description = parsed.description || parsed.summary || null;
-
-    if (!item && !colour && !description) return null;
-
-    return { item: item || "", colour: colour || "", description: description || "" };
-  } catch (err) {
-    console.error("AppyCrew Gemini vision error:", err);
-    return null;
   }
 }
 
-async function callVision(imageBase64, textFromOcr) {
-  if (VISION_MODE === "off") return null;
-
-  const hasOpenAI = !!OPENAI_API_KEY;
-  const hasGemini = !!GEMINI_API_KEY;
-
-  if (!hasOpenAI && !hasGemini) return null;
-  if (!shouldCallVision(textFromOcr || "")) return null;
-
-  if (VISION_PROVIDER === "gemini" && hasGemini)
-    return await callGeminiVision(imageBase64);
-  if (VISION_PROVIDER === "openai" && hasOpenAI)
-    return await callOpenAIVision(imageBase64);
-  if (hasOpenAI) return await callOpenAIVision(imageBase64);
-  if (hasGemini) return await callGeminiVision(imageBase64);
+/**
+ * Extract base64 data from data URL
+ */
+function extractBase64(dataUrl) {
+  if (!dataUrl) return null;
+  
+  // If it's already raw base64 (no prefix)
+  if (!dataUrl.includes(',') && !dataUrl.includes(':')) {
+    return dataUrl;
+  }
+  
+  // Extract from data URL format
+  const match = dataUrl.match(/^data:image\/\w+;base64,(.+)$/);
+  if (match) {
+    return match[1];
+  }
+  
+  // Try splitting by comma as fallback
+  const parts = dataUrl.split(',');
+  if (parts.length === 2) {
+    return parts[1];
+  }
+  
   return null;
 }
 
-module.exports = async (req, res) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+/**
+ * Call Google Cloud Vision API
+ */
+async function callGoogleVision(base64Data) {
+  const apiKey = process.env.GOOGLE_VISION_API_KEY;
+  const endpoint = `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`;
 
-  if (req.method === "OPTIONS") {
-    res.status(200).end();
-    return;
+  const requestBody = {
+    requests: [{
+      image: {
+        content: base64Data
+      },
+      features: [
+        { type: 'TEXT_DETECTION', maxResults: 10 },
+        { type: 'DOCUMENT_TEXT_DETECTION', maxResults: 1 }
+      ]
+    }]
+  };
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(requestBody)
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(`Google Vision API error: ${response.status} - ${JSON.stringify(errorData)}`);
   }
 
-  if (req.method !== "POST") {
-    res.status(405).json({ success: false, error: "Method not allowed" });
-    return;
+  const data = await response.json();
+  
+  // Try to get full text annotation first (better for documents)
+  const fullTextAnnotation = data.responses?.[0]?.fullTextAnnotation?.text;
+  if (fullTextAnnotation) {
+    return fullTextAnnotation;
+  }
+  
+  // Fallback to text annotations
+  const textAnnotations = data.responses?.[0]?.textAnnotations;
+  if (textAnnotations && textAnnotations.length > 0) {
+    return textAnnotations[0].description;
   }
 
-  const body = parseBody(req);
-  const imageBase64 = body.imageBase64;
-  const formType = body.formType || null;
+  return '';
+}
 
-  if (!imageBase64 || typeof imageBase64 !== "string") {
-    res.status(400).json({ success: false, error: "Missing imageBase64" });
-    return;
+/**
+ * Call OCR.space API
+ */
+async function callOcrSpace(base64Data) {
+  const apiKey = process.env.OCR_SPACE_API_KEY;
+  const endpoint = 'https://api.ocr.space/parse/image';
+
+  const formData = new URLSearchParams();
+  formData.append('apikey', apiKey);
+  formData.append('base64Image', `data:image/jpeg;base64,${base64Data}`);
+  formData.append('language', 'eng');
+  formData.append('isOverlayRequired', 'false');
+  formData.append('detectOrientation', 'true');
+  formData.append('scale', 'true');
+  formData.append('OCREngine', '2'); // Engine 2 is better for most cases
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: formData.toString()
+  });
+
+  if (!response.ok) {
+    throw new Error(`OCR.space API error: ${response.status}`);
   }
 
-  try {
-    let text = "";
-    let ocrProvider = "demo";
+  const data = await response.json();
 
-    // Prefer Google Vision when configured
-    if (GOOGLE_VISION_API_KEY) {
-      try {
-        const gvResult = await callGoogleVision(imageBase64);
-        text = (gvResult && gvResult.text) || "";
-        if (text && text.trim()) {
-          ocrProvider = "google-vision";
-        }
-      } catch (e) {
-        console.error("Google Vision failed, falling back to OCR.space:", e);
-      }
-    }
-
-    // Fallback to OCR.space if Google Vision is not configured or returned no useful text
-    if ((!text || !text.trim()) && OCR_API_KEY) {
-      const ocrResult = await callOcrSpace(imageBase64);
-      const ocrText = (ocrResult && ocrResult.text) || "";
-      if (ocrText && ocrText.trim()) {
-        text = ocrText;
-        ocrProvider = "ocr.space";
-      } else if (!text) {
-        text = ocrText;
-      }
-    }
-
-    // If we still have nothing and no providers are configured, return demo message
-    if (!text || !text.trim()) {
-      if (!GOOGLE_VISION_API_KEY && !OCR_API_KEY) {
-        text =
-          "Demo mode: No OCR provider is configured.\n" +
-          "Add GOOGLE_VISION_API_KEY or OCR_SPACE_API_KEY in the project settings to enable real text OCR.";
-        ocrProvider = "demo";
-      } else {
-        text = "";
-      }
-    }
-
-    // Strip common branding / tape noise
-    text = stripBrandNoise(text || "");
-
-    const visionResult = await callVision(imageBase64, text);
-
-    res.status(200).json({
-      success: true,
-      text: text,
-      vision: visionResult || null,
-      meta: {
-        formType,
-        ocrProvider,
-        aiProvider:
-          visionResult && VISION_MODE !== "off"
-            ? VISION_PROVIDER === "gemini"
-              ? "gemini"
-              : "openai"
-            : null,
-        aiEnabled: !!visionResult
-      }
-    });
-  } catch (err) {
-    console.error("AppyCrew OCR function error:", err);
-    res
-      .status(500)
-      .json({ success: false, error: "Server error while running OCR / AI" });
+  if (data.IsErroredOnProcessing) {
+    throw new Error(`OCR.space processing error: ${data.ErrorMessage || 'Unknown error'}`);
   }
-};
+
+  // Extract text from parsed results
+  const parsedResults = data.ParsedResults;
+  if (parsedResults && parsedResults.length > 0) {
+    return parsedResults.map(r => r.ParsedText).join('\n');
+  }
+
+  return '';
+}
+
+/**
+ * Clean OCR text - remove noise and normalize
+ */
+function cleanOcrText(text) {
+  if (!text) return '';
+  
+  // Brand/noise words to remove
+  const noisePatterns = [
+    /\bappycrew\b/gi,
+    /\bfragile\b/gi,
+    /\bhandle with care\b/gi,
+    /\bthis side up\b/gi,
+    /\bheavy\b/gi,
+    /\bdo not stack\b/gi,
+    /\bkeep dry\b/gi,
+  ];
+  
+  let cleaned = text;
+  
+  // Remove noise patterns
+  for (const pattern of noisePatterns) {
+    cleaned = cleaned.replace(pattern, '');
+  }
+  
+  // Normalize whitespace
+  cleaned = cleaned
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/^ +| +$/gm, '')
+    .trim();
+  
+  return cleaned;
+}
