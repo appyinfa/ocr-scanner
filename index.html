@@ -3,49 +3,616 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OCR Widget Test</title>
+    <title>OCR Widget Demo - AppyCrew</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 600px;
+            margin: 40px auto;
+            background: white;
+            border-radius: 16px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+        
+        h1 {
+            color: #1e293b;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        
+        .subtitle {
+            color: #64748b;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        
+        .badge {
+            display: inline-block;
+            background: #22c55e;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 20px;
+        }
+        
+        label span {
+            display: block;
+            font-weight: 600;
+            color: #334155;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+        
+        select, input, textarea {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: inherit;
+            transition: all 0.2s;
+        }
+        
+        select:focus, input:focus, textarea:focus {
+            outline: none;
+            border-color: #6366f1;
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+        }
+        
+        textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+        
+        .instructions {
+            background: #f1f5f9;
+            border-left: 4px solid #6366f1;
+            padding: 16px;
+            border-radius: 8px;
+            margin-top: 30px;
+            font-size: 13px;
+            color: #475569;
+        }
+        
+        .instructions strong {
+            color: #1e293b;
+            display: block;
+            margin-bottom: 8px;
+        }
+    </style>
 </head>
 <body>
-    <div style="max-width: 600px; margin: 40px auto; padding: 20px;">
+    <div class="container">
+        <div class="badge">✨ Enhanced Widget Active</div>
         <h1>OCR Widget Demo</h1>
+        <p class="subtitle">Click the button in the bottom-right to scan and auto-fill</p>
         
         <form data-appycrew-ocr="true">
-            <label style="display: block; margin-bottom: 15px;">
-                Item
-                <select name="item" data-appycrew-type="item" style="width: 100%; padding: 8px;">
-                    <option value="">Select...</option>
+            <label>
+                <span>Item</span>
+                <select name="item" data-appycrew-type="item">
+                    <option value="">Select item...</option>
                     <option value="chair">Chair</option>
                     <option value="table">Table</option>
                     <option value="wardrobe">Wardrobe</option>
                     <option value="sofa">Sofa</option>
+                    <option value="box">Box</option>
                 </select>
             </label>
             
-            <label style="display: block; margin-bottom: 15px;">
-                Quantity
-                <input type="number" name="qty" data-appycrew-type="quantity" 
-                       style="width: 100%; padding: 8px;" />
+            <label>
+                <span>Quantity</span>
+                <input type="number" name="qty" data-appycrew-type="quantity" placeholder="0" />
             </label>
             
-            <label style="display: block; margin-bottom: 15px;">
-                Description
+            <label>
+                <span>Description</span>
                 <textarea name="description" data-appycrew-type="description" 
-                          style="width: 100%; padding: 8px;" rows="3"></textarea>
+                          placeholder="Colour, condition, notes..."></textarea>
             </label>
             
-            <label style="display: block; margin-bottom: 15px;">
-                Location
-                <select name="location" data-appycrew-type="location" style="width: 100%; padding: 8px;">
-                    <option value="">Select...</option>
+            <label>
+                <span>Location</span>
+                <select name="location" data-appycrew-type="location">
+                    <option value="">Select location...</option>
                     <option value="living room">Living Room</option>
-                    <option value="bedroom">Bedroom</option>
+                    <option value="master bedroom">Master Bedroom</option>
                     <option value="kitchen">Kitchen</option>
+                    <option value="dining room">Dining Room</option>
+                    <option value="garage">Garage</option>
                 </select>
             </label>
         </form>
+        
+        <div class="instructions">
+            <strong>How to use:</strong>
+            1. Click the black circular button in the bottom-right corner<br>
+            2. Take a photo of an inventory item or document<br>
+            3. Review the suggested matches<br>
+            4. Click "Apply to Form" to fill the fields<br><br>
+            <strong>Keyboard shortcut:</strong> Ctrl+Shift+S (or Cmd+Shift+S on Mac)
+        </div>
     </div>
 
-    <!-- IMPORTANT: Load the widget script -->
-    <script src="/ocr-widget-enhanced.js"></script>
+    <!-- WIDGET SCRIPT - EMBEDDED -->
+    <script>
+    (function () {
+      if (typeof window === "undefined") return;
+      if (window.__APPYCREW_OCR_WIDGET_INITED__) return;
+      window.__APPYCREW_OCR_WIDGET_INITED__ = true;
+
+      const PANEL_ID = "appycrew-ocr-panel";
+      const FAB_ID = "appycrew-ocr-fab";
+      const TOAST_CONTAINER_ID = "appycrew-toast-container";
+
+      const state = {
+        apiBase: null,
+        forms: [],
+        activeForm: null,
+        observer: null,
+        mappings: [],
+        ui: null
+      };
+
+      // Utilities
+      function ready(fn) {
+        if (document.readyState === "complete" || document.readyState === "interactive") {
+          setTimeout(fn, 0);
+        } else {
+          document.addEventListener("DOMContentLoaded", fn);
+        }
+      }
+
+      function detectApiBase() {
+        if (state.apiBase) return state.apiBase;
+        if (window.APPYCREW_OCR_API_BASE) {
+          state.apiBase = String(window.APPYCREW_OCR_API_BASE).replace(/\/+$/, "");
+          return state.apiBase;
+        }
+        state.apiBase = window.location.origin;
+        return state.apiBase;
+      }
+
+      function showToast(message, type = 'info', duration = 3000) {
+        let container = document.getElementById(TOAST_CONTAINER_ID);
+        if (!container) {
+          container = document.createElement('div');
+          container.id = TOAST_CONTAINER_ID;
+          container.style.cssText = 'position:fixed;top:20px;right:20px;z-index:2147483648;display:flex;flex-direction:column;gap:12px;';
+          document.body.appendChild(container);
+        }
+
+        const toast = document.createElement('div');
+        toast.className = 'ac-toast ac-toast-' + type;
+        
+        const icons = {
+          success: '✓',
+          error: '✕',
+          info: 'ℹ',
+          loading: '⟳'
+        };
+        
+        toast.innerHTML = '<div class="ac-toast-icon">' + icons[type] + '</div><div class="ac-toast-message">' + message + '</div>';
+        container.appendChild(toast);
+        
+        setTimeout(() => toast.classList.add('ac-toast-show'), 10);
+        
+        if (duration > 0) {
+          setTimeout(() => {
+            toast.classList.remove('ac-toast-show');
+            setTimeout(() => toast.remove(), 300);
+          }, duration);
+        }
+        
+        return toast;
+      }
+
+      function isElementVisible(el) {
+        if (!el || !el.getBoundingClientRect) return false;
+        const rect = el.getBoundingClientRect();
+        const vh = window.innerHeight || document.documentElement.clientHeight;
+        if (rect.bottom <= 0 || rect.top >= vh) return false;
+        return true;
+      }
+
+      function collectForms() {
+        const forms = Array.prototype.slice.call(document.querySelectorAll("form"));
+        state.forms = forms;
+        state.activeForm = forms.length > 0 ? forms[0] : null;
+        updateFabVisibility();
+      }
+
+      function updateFabVisibility() {
+        const fab = document.getElementById(FAB_ID);
+        if (!fab) return;
+        
+        if (state.forms && state.forms.length) {
+          fab.style.display = "flex";
+        } else {
+          fab.style.display = "none";
+        }
+      }
+
+      function injectStyles() {
+        if (document.getElementById(PANEL_ID + "-styles")) return;
+        
+        const css = `
+#${FAB_ID} {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 2147483647;
+  width: 56px;
+  height: 56px;
+  border-radius: 28px;
+  border: none;
+  background: #111827;
+  color: white;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+#${FAB_ID}:hover {
+  transform: translateY(-2px) scale(1.05);
+  box-shadow: 0 15px 35px rgba(0,0,0,0.4);
+}
+#${FAB_ID} svg {
+  width: 24px;
+  height: 24px;
+  fill: currentColor;
+}
+#${PANEL_ID} {
+  position: fixed;
+  right: 20px;
+  bottom: 90px;
+  width: 380px;
+  max-width: calc(100vw - 40px);
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  font-family: system-ui, -apple-system, sans-serif;
+  z-index: 2147483647;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(10px);
+  transition: all 0.3s;
+}
+#${PANEL_ID}.ac-open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+#${PANEL_ID} .ac-header {
+  background: #1e293b;
+  padding: 16px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: white;
+}
+#${PANEL_ID} .ac-title-main {
+  font-size: 16px;
+  font-weight: 600;
+}
+#${PANEL_ID} .ac-title-sub {
+  font-size: 12px;
+  opacity: 0.8;
+  margin-top: 2px;
+}
+#${PANEL_ID} .ac-close {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(255,255,255,0.1);
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#${PANEL_ID} .ac-body {
+  padding: 20px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+#${PANEL_ID} .ac-mappings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+#${PANEL_ID} .ac-map-row {
+  display: flex;
+  gap: 12px;
+  padding: 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+}
+#${PANEL_ID} .ac-map-check {
+  width: 20px;
+  height: 20px;
+  accent-color: #6366f1;
+}
+#${PANEL_ID} .ac-map-main {
+  flex: 1;
+}
+#${PANEL_ID} .ac-map-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e293b;
+  margin-bottom: 4px;
+  text-transform: capitalize;
+}
+#${PANEL_ID} .ac-map-value {
+  font-size: 13px;
+  color: #475569;
+}
+#${PANEL_ID} .ac-footer {
+  padding: 16px 20px;
+  background: #f8fafc;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+#${PANEL_ID} .ac-btn {
+  padding: 10px 20px;
+  border-radius: 8px;
+  border: none;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#${PANEL_ID} .ac-btn-primary {
+  background: #6366f1;
+  color: white;
+}
+#${PANEL_ID} .ac-btn-ghost {
+  background: transparent;
+  color: #64748b;
+}
+.ac-toast {
+  background: white;
+  border-radius: 12px;
+  padding: 14px 18px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 250px;
+  opacity: 0;
+  transform: translateX(400px);
+  transition: all 0.3s;
+}
+.ac-toast-show {
+  opacity: 1;
+  transform: translateX(0);
+}
+.ac-toast-icon {
+  font-size: 20px;
+}
+.ac-toast-success { border-left: 4px solid #22c55e; }
+.ac-toast-success .ac-toast-icon { color: #22c55e; }
+.ac-toast-error { border-left: 4px solid #ef4444; }
+.ac-toast-error .ac-toast-icon { color: #ef4444; }
+.ac-toast-info { border-left: 4px solid #3b82f6; }
+.ac-toast-info .ac-toast-icon { color: #3b82f6; }
+.ac-toast-message {
+  font-size: 14px;
+  color: #1e293b;
+  font-weight: 500;
+}
+`;
+        
+        const style = document.createElement("style");
+        style.id = PANEL_ID + "-styles";
+        style.textContent = css;
+        document.head.appendChild(style);
+      }
+
+      function createFab() {
+        if (document.getElementById(FAB_ID)) return;
+        
+        const fab = document.createElement("button");
+        fab.id = FAB_ID;
+        fab.type = "button";
+        fab.innerHTML = '<svg viewBox="0 0 24 24"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>';
+        fab.title = "Scan with AppyCrew";
+        
+        fab.addEventListener("click", () => {
+          if (!state.activeForm) {
+            showToast('No form detected!', 'error');
+            return;
+          }
+          state.ui.fileInput.click();
+        });
+        
+        document.body.appendChild(fab);
+        return fab;
+      }
+
+      function createPanel() {
+        const panel = document.createElement("div");
+        panel.id = PANEL_ID;
+
+        panel.innerHTML = `
+          <div class="ac-header">
+            <div>
+              <div class="ac-title-main">Review Matches</div>
+              <div class="ac-title-sub">DEMO: Showing sample data</div>
+            </div>
+            <button class="ac-close" type="button">✕</button>
+          </div>
+          <div class="ac-body">
+            <div class="ac-mappings"></div>
+          </div>
+          <div class="ac-footer">
+            <button class="ac-btn ac-btn-ghost" type="button" id="ac-cancel-btn">Cancel</button>
+            <button class="ac-btn ac-btn-primary" type="button" id="ac-apply-btn">Apply to Form</button>
+          </div>
+        `;
+
+        document.body.appendChild(panel);
+
+        panel.querySelector('.ac-close').addEventListener('click', () => {
+          panel.classList.remove('ac-open');
+        });
+
+        panel.querySelector('#ac-cancel-btn').addEventListener('click', () => {
+          panel.classList.remove('ac-open');
+        });
+
+        panel.querySelector('#ac-apply-btn').addEventListener('click', () => {
+          applyMappings(state.mappings.filter(m => m.checked));
+          panel.classList.remove('ac-open');
+          showToast('Applied to form!', 'success');
+        });
+
+        const fileInput = document.createElement("input");
+        fileInput.type = "file";
+        fileInput.accept = "image/*";
+        fileInput.capture = "environment";
+        fileInput.style.display = "none";
+        fileInput.addEventListener("change", handleFileChange);
+        document.body.appendChild(fileInput);
+
+        state.ui = {
+          panel: panel,
+          mappingsContainer: panel.querySelector('.ac-mappings'),
+          fileInput: fileInput
+        };
+
+        return panel;
+      }
+
+      function handleFileChange(e) {
+        const file = e.target && e.target.files && e.target.files[0];
+        if (!file) return;
+
+        showToast('Processing image (DEMO MODE)...', 'loading', 2000);
+
+        setTimeout(() => {
+          const mockMappings = [
+            { el: state.activeForm.querySelector('[data-appycrew-type="item"]'), label: 'Item', value: 'Wardrobe', checked: true },
+            { el: state.activeForm.querySelector('[data-appycrew-type="quantity"]'), label: 'Quantity', value: '1', checked: true },
+            { el: state.activeForm.querySelector('[data-appycrew-type="description"]'), label: 'Description', value: 'Oak wood, large', checked: true },
+            { el: state.activeForm.querySelector('[data-appycrew-type="location"]'), label: 'Location', value: 'master bedroom', checked: true }
+          ];
+
+          state.mappings = mockMappings.filter(m => m.el);
+          
+          if (state.mappings.length > 0) {
+            renderMappings(state.ui.mappingsContainer, state.mappings);
+            state.ui.panel.classList.add('ac-open');
+            showToast(`Found ${state.mappings.length} matches!`, 'success');
+          }
+        }, 2000);
+
+        e.target.value = '';
+      }
+
+      function renderMappings(container, mappings) {
+        container.innerHTML = '';
+
+        mappings.forEach((mapping) => {
+          const row = document.createElement('div');
+          row.className = 'ac-map-row';
+
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.className = 'ac-map-check';
+          checkbox.checked = mapping.checked !== false;
+          checkbox.addEventListener('change', () => {
+            mapping.checked = checkbox.checked;
+          });
+
+          const main = document.createElement('div');
+          main.className = 'ac-map-main';
+          main.innerHTML = `
+            <div class="ac-map-label">${mapping.label}</div>
+            <div class="ac-map-value">${mapping.value}</div>
+          `;
+
+          row.appendChild(checkbox);
+          row.appendChild(main);
+          container.appendChild(row);
+        });
+      }
+
+      function applyMappings(mappings) {
+        for (const m of mappings) {
+          if (!m.el) continue;
+          
+          const tag = m.el.tagName.toLowerCase();
+          if (tag === "select") {
+            for (let i = 0; i < m.el.options.length; i++) {
+              const opt = m.el.options[i];
+              if (opt.value.toLowerCase() === m.value.toLowerCase() || 
+                  opt.text.toLowerCase() === m.value.toLowerCase()) {
+                m.el.value = opt.value;
+                break;
+              }
+            }
+          } else {
+            m.el.value = m.value;
+          }
+          
+          m.el.dispatchEvent(new Event("input", { bubbles: true }));
+          m.el.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }
+
+      function setupMutationObserver() {
+        const obs = new MutationObserver(() => {
+          collectForms();
+        });
+        
+        obs.observe(document.body, {
+          childList: true,
+          subtree: true
+        });
+        
+        state.observer = obs;
+      }
+
+      ready(function () {
+        injectStyles();
+        collectForms();
+        setupMutationObserver();
+        createFab();
+        createPanel();
+        
+        setTimeout(() => {
+          showToast('👋 Widget ready! Click the button to scan.', 'info', 4000);
+        }, 1000);
+      });
+    })();
+    </script>
 </body>
 </html>
