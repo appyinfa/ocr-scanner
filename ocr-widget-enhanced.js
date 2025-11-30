@@ -47,35 +47,192 @@
     originalValues: new Map(),
     fieldClassifier: {
       trainingData: [],
+      fieldPatterns: {},  // Learned patterns per field type
+      
+      // Learn from successful mappings
       learn: function(fieldLabel, fieldType, correctValue) {
-        this.trainingData.push({
-          fieldLabel: fieldLabel.toLowerCase(),
-          fieldType: fieldType || 'text',
-          correctValue: String(correctValue).toLowerCase(),
+        const entry = {
+          label: fieldLabel.toLowerCase().trim(),
+          type: fieldType || 'text',
+          value: String(correctValue).toLowerCase().trim(),
           timestamp: Date.now()
-        });
-        if (this.trainingData.length % 5 === 0) {
+        };
+        
+        this.trainingData.push(entry);
+        
+        // Build pattern associations
+        if (!this.fieldPatterns[fieldType]) {
+          this.fieldPatterns[fieldType] = { labels: {}, values: [] };
+        }
+        
+        // Track label → type associations
+        const labelWords = entry.label.split(/\s+/);
+        for (const word of labelWords) {
+          if (word.length > 2) {
+            this.fieldPatterns[fieldType].labels[word] = 
+              (this.fieldPatterns[fieldType].labels[word] || 0) + 1;
+          }
+        }
+        
+        // Track common values for this type
+        if (entry.value.length > 1 && entry.value.length < 50) {
+          this.fieldPatterns[fieldType].values.push(entry.value);
+        }
+        
+        // Auto-save every 3 entries
+        if (this.trainingData.length % 3 === 0) {
           this.save();
         }
       },
+      
+      // Learn from user corrections (when they edit a mapped value)
+      learnCorrection: function(fieldLabel, fieldType, wrongValue, correctValue) {
+        console.log('[AppyCrew OCR] Learning correction:', fieldLabel, wrongValue, '→', correctValue);
+        
+        // Store correction for future reference
+        const correction = {
+          label: fieldLabel.toLowerCase(),
+          type: fieldType,
+          wrong: String(wrongValue).toLowerCase(),
+          correct: String(correctValue).toLowerCase(),
+          timestamp: Date.now()
+        };
+        
+        // Store corrections separately
+        let corrections = [];
+        try {
+          const saved = localStorage.getItem('appycrew_corrections');
+          if (saved) corrections = JSON.parse(saved);
+        } catch (e) {}
+        
+        corrections.push(correction);
+        
+        // Keep last 50 corrections
+        if (corrections.length > 50) {
+          corrections = corrections.slice(-50);
+        }
+        
+        try {
+          localStorage.setItem('appycrew_corrections', JSON.stringify(corrections));
+        } catch (e) {}
+        
+        // Also add the correct mapping
+        this.learn(fieldLabel, fieldType, correctValue);
+      },
+      
+      // Predict best field for a value based on learned patterns
+      predictField: function(value, candidateFields) {
+        if (!value || !candidateFields.length) return null;
+        
+        const valueLower = value.toLowerCase();
+        let bestMatch = null;
+        let bestScore = 0;
+        
+        for (const field of candidateFields) {
+          let score = 0;
+          const labelLower = field.labelLower || field.label.toLowerCase();
+          
+          // Check if we've seen this label → type association before
+          for (const [type, patterns] of Object.entries(this.fieldPatterns)) {
+            for (const [word, count] of Object.entries(patterns.labels || {})) {
+              if (labelLower.includes(word)) {
+                score += count * 2;
+              }
+            }
+            
+            // Check if value matches known values for this type
+            if (patterns.values && patterns.values.includes(valueLower)) {
+              score += 5;
+            }
+          }
+          
+          if (score > bestScore) {
+            bestScore = score;
+            bestMatch = { field, score };
+          }
+        }
+        
+        return bestMatch;
+      },
+      
       save: function() {
         try {
-          localStorage.setItem('appycrew_field_classifier', 
-            JSON.stringify(this.trainingData.slice(-100))
-          );
+          const data = {
+            trainingData: this.trainingData.slice(-100),
+            fieldPatterns: this.fieldPatterns,
+            version: 2
+          };
+          localStorage.setItem('appycrew_field_classifier', JSON.stringify(data));
+          console.log('[AppyCrew OCR] Saved training data:', this.trainingData.length, 'entries');
         } catch (e) {
           console.warn('Could not save field classifier:', e);
         }
       },
+      
       load: function() {
         try {
           const saved = localStorage.getItem('appycrew_field_classifier');
           if (saved) {
-            this.trainingData = JSON.parse(saved);
+            const data = JSON.parse(saved);
+            if (data.version === 2) {
+              this.trainingData = data.trainingData || [];
+              this.fieldPatterns = data.fieldPatterns || {};
+            } else {
+              // Legacy format
+              this.trainingData = Array.isArray(data) ? data : [];
+            }
+            console.log('[AppyCrew OCR] Loaded training data:', this.trainingData.length, 'entries');
           }
         } catch (e) {
           console.warn('Could not load field classifier:', e);
         }
+      },
+      
+      // Export training data for backup/sharing
+      export: function() {
+        return {
+          trainingData: this.trainingData,
+          fieldPatterns: this.fieldPatterns,
+          corrections: JSON.parse(localStorage.getItem('appycrew_corrections') || '[]'),
+          exportDate: new Date().toISOString()
+        };
+      },
+      
+      // Import training data
+      import: function(data) {
+        if (data.trainingData) {
+          this.trainingData = [...this.trainingData, ...data.trainingData].slice(-200);
+        }
+        if (data.fieldPatterns) {
+          for (const [type, patterns] of Object.entries(data.fieldPatterns)) {
+            if (!this.fieldPatterns[type]) {
+              this.fieldPatterns[type] = patterns;
+            } else {
+              // Merge labels
+              for (const [word, count] of Object.entries(patterns.labels || {})) {
+                this.fieldPatterns[type].labels[word] = 
+                  (this.fieldPatterns[type].labels[word] || 0) + count;
+              }
+              // Merge values
+              const existingValues = new Set(this.fieldPatterns[type].values || []);
+              for (const v of (patterns.values || [])) {
+                existingValues.add(v);
+              }
+              this.fieldPatterns[type].values = Array.from(existingValues).slice(-100);
+            }
+          }
+        }
+        this.save();
+        console.log('[AppyCrew OCR] Imported training data');
+      },
+      
+      // Clear all training data
+      reset: function() {
+        this.trainingData = [];
+        this.fieldPatterns = {};
+        localStorage.removeItem('appycrew_field_classifier');
+        localStorage.removeItem('appycrew_corrections');
+        console.log('[AppyCrew OCR] Training data reset');
       }
     }
   };
@@ -1374,7 +1531,8 @@
   }
 
   async function processAudioBlob(audioBlob, mimeType) {
-    showToast('Processing speech...', 'loading', 0);
+    // Brief toast that auto-dismisses
+    showToast('Processing speech...', 'loading', 2000);
     
     try {
       // Convert blob to base64
@@ -1413,12 +1571,12 @@
       }
       
       // Process the transcribed text
-      showToast(`Heard: "${data.text}"`, 'success', 2000);
+      showToast(`"${data.text.substring(0, 30)}${data.text.length > 30 ? '...' : ''}"`, 'success', 2000);
       processVoiceInput(data.text);
       
     } catch (error) {
       console.error('[AppyCrew OCR] Speech processing error:', error);
-      showToast(`Speech failed: ${error.message}`, 'error');
+      showToast('Speech failed. Try again.', 'error', 2000);
     } finally {
       state.isListening = false;
       updateFabState();
@@ -1833,6 +1991,7 @@
     container.innerHTML = state.mappings.map((mapping, index) => {
       const confidence = Math.round((mapping.confidence || 0) * 100);
       const confidenceColor = confidence >= 90 ? '#22c55e' : confidence >= 80 ? '#eab308' : '#f97316';
+      const displayValue = String(mapping.value || '').substring(0, 100);
       
       return `
         <div class="ac-map-row" data-index="${index}">
@@ -1845,7 +2004,7 @@
                 ${confidence}%
               </span>
             </div>
-            <div class="ac-map-value">${escapeHtml(String(mapping.value))}</div>
+            <input type="text" class="ac-map-value-input" value="${escapeHtml(displayValue)}" data-index="${index}" data-original="${escapeHtml(displayValue)}">
           </div>
         </div>
       `;
@@ -1857,6 +2016,34 @@
         const index = parseInt(e.target.dataset.index);
         if (state.mappings[index]) {
           state.mappings[index].checked = e.target.checked;
+        }
+      });
+    });
+    
+    // Add value edit listeners (for training)
+    container.querySelectorAll('.ac-map-value-input').forEach(input => {
+      input.addEventListener('change', (e) => {
+        const index = parseInt(e.target.dataset.index);
+        const original = e.target.dataset.original;
+        const newValue = e.target.value.trim();
+        
+        if (state.mappings[index] && newValue !== original) {
+          // User corrected a value - learn from this!
+          state.fieldClassifier.learnCorrection(
+            state.mappings[index].label,
+            state.mappings[index].typeHint,
+            original,
+            newValue
+          );
+          
+          // Update the mapping
+          state.mappings[index].value = newValue;
+          state.mappings[index].confidence = 1.0; // User-corrected = 100% confidence
+          e.target.dataset.original = newValue;
+          
+          // Visual feedback
+          e.target.style.borderColor = '#22c55e';
+          setTimeout(() => { e.target.style.borderColor = ''; }, 1000);
         }
       });
     });
@@ -2193,6 +2380,26 @@
   word-break: break-word;
 }
 
+#${PANEL_ID} .ac-map-value-input {
+  width: 100%;
+  font-size: 13px;
+  color: #475569;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 6px 8px;
+  transition: border-color 0.2s;
+}
+
+#${PANEL_ID} .ac-map-value-input:focus {
+  outline: none;
+  border-color: #6366f1;
+}
+
+#${PANEL_ID} .ac-map-value-input:hover {
+  border-color: #cbd5e1;
+}
+
 #${PANEL_ID} .ac-empty {
   text-align: center;
   padding: 30px 20px;
@@ -2431,11 +2638,46 @@
   
   // Expose for external control if needed
   window.AppyCrewOCR = {
+    // Actions
     scan: openFileInput,
     voice: startVoiceInput,
     open: openPanel,
     close: closePanel,
-    getState: () => ({ ...state })
+    
+    // Training API
+    train: {
+      // Export all training data (for backup or sharing between devices)
+      export: () => state.fieldClassifier.export(),
+      
+      // Import training data
+      import: (data) => state.fieldClassifier.import(data),
+      
+      // Reset all training
+      reset: () => state.fieldClassifier.reset(),
+      
+      // Manually teach a mapping
+      teach: (fieldLabel, fieldType, value) => {
+        state.fieldClassifier.learn(fieldLabel, fieldType, value);
+        state.fieldClassifier.save();
+      },
+      
+      // Get training stats
+      stats: () => ({
+        entries: state.fieldClassifier.trainingData.length,
+        patterns: Object.keys(state.fieldClassifier.fieldPatterns).length,
+        corrections: JSON.parse(localStorage.getItem('appycrew_corrections') || '[]').length
+      })
+    },
+    
+    // Configuration
+    config: {
+      setApiBase: (url) => { state.apiBase = url; },
+      getApiBase: () => detectApiBase()
+    },
+    
+    // Debug
+    getState: () => ({ ...state }),
+    version: '10.2.0'
   };
 
 })();
