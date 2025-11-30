@@ -1060,84 +1060,189 @@
 
   // ========== VOICE INPUT ==========
 
+  // Detect iOS
+  function isIOS() {
+    return /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+           (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  }
+
   function initSpeechRecognition() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      console.warn('Speech recognition not supported');
+      console.warn('[AppyCrew OCR] Speech recognition not supported');
       return null;
     }
     
-    const recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-    
-    return recognition;
+    try {
+      const recognition = new SpeechRecognition();
+      
+      // iOS Safari works better with these settings
+      recognition.continuous = false;
+      recognition.interimResults = !isIOS(); // iOS doesn't handle interim well
+      recognition.maxAlternatives = 1;
+      recognition.lang = navigator.language || 'en-US';
+      
+      console.log('[AppyCrew OCR] Speech recognition initialized, iOS:', isIOS());
+      return recognition;
+    } catch (e) {
+      console.error('[AppyCrew OCR] Failed to init speech recognition:', e);
+      return null;
+    }
   }
 
   function startVoiceInput() {
+    // If already listening, stop
     if (state.isListening) {
       stopVoiceInput();
       return;
     }
-    
-    if (!state.speechRecognition) {
+
+    // Check for HTTPS (required on iOS)
+    if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+      showToast('Voice requires HTTPS connection', 'error');
+      console.error('[AppyCrew OCR] Voice input requires HTTPS');
+      return;
+    }
+
+    // Always create a fresh recognition instance for iOS
+    // iOS has issues reusing the same instance
+    if (isIOS() || !state.speechRecognition) {
       state.speechRecognition = initSpeechRecognition();
     }
     
     if (!state.speechRecognition) {
-      showToast('Voice input not supported', 'error');
+      showToast('Voice not supported on this browser', 'error');
       return;
     }
-    
+
+    // Request microphone permission first on iOS
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(() => {
+          console.log('[AppyCrew OCR] Microphone permission granted');
+          actuallyStartListening();
+        })
+        .catch((err) => {
+          console.error('[AppyCrew OCR] Microphone permission denied:', err);
+          showToast('Microphone access denied', 'error');
+        });
+    } else {
+      // Fallback for older browsers
+      actuallyStartListening();
+    }
+  }
+
+  function actuallyStartListening() {
+    const recognition = state.speechRecognition;
+    if (!recognition) return;
+
     state.isListening = true;
     updateFabState();
-    showToast('Listening... Speak now', 'info', 0);
     
     let finalTranscript = '';
+    let hasResult = false;
     
-    state.speechRecognition.onresult = (event) => {
+    // Clear any previous handlers
+    recognition.onresult = null;
+    recognition.onend = null;
+    recognition.onerror = null;
+    recognition.onspeechend = null;
+    recognition.onnomatch = null;
+
+    recognition.onresult = (event) => {
+      hasResult = true;
       let interimTranscript = '';
       
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const transcript = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
           finalTranscript += transcript + ' ';
+          console.log('[AppyCrew OCR] Final transcript:', transcript);
         } else {
           interimTranscript += transcript;
         }
       }
       
-      // Show interim results
-      if (interimTranscript) {
-        showToast(`Heard: "${interimTranscript}"`, 'info', 1000);
+      // Show interim results (not on iOS)
+      if (interimTranscript && !isIOS()) {
+        showToast(`Heard: "${interimTranscript}"`, 'info', 1500);
       }
     };
-    
-    state.speechRecognition.onend = () => {
+
+    recognition.onspeechend = () => {
+      console.log('[AppyCrew OCR] Speech ended');
+      // iOS sometimes needs manual stop
+      if (isIOS()) {
+        try { recognition.stop(); } catch(e) {}
+      }
+    };
+
+    recognition.onend = () => {
+      console.log('[AppyCrew OCR] Recognition ended, hasResult:', hasResult);
       state.isListening = false;
       updateFabState();
       
       if (finalTranscript.trim()) {
         processVoiceInput(finalTranscript.trim());
-      } else {
-        showToast('No speech detected. Try again.', 'info');
+      } else if (!hasResult) {
+        showToast('No speech detected. Tap and speak clearly.', 'info');
       }
     };
     
-    state.speechRecognition.onerror = (event) => {
+    recognition.onerror = (event) => {
+      console.error('[AppyCrew OCR] Speech error:', event.error);
       state.isListening = false;
       updateFabState();
-      console.error('Speech recognition error:', event.error);
-      showToast('Voice input failed. Try again.', 'error');
+      
+      // Provide helpful error messages
+      const errorMessages = {
+        'not-allowed': 'Microphone access denied. Check browser settings.',
+        'no-speech': 'No speech detected. Try again.',
+        'network': 'Network error. Check your connection.',
+        'audio-capture': 'No microphone found.',
+        'aborted': 'Voice input cancelled.',
+        'service-not-allowed': 'Voice service not available on this device.'
+      };
+      
+      const message = errorMessages[event.error] || `Voice error: ${event.error}`;
+      showToast(message, 'error');
     };
+
+    recognition.onnomatch = () => {
+      console.log('[AppyCrew OCR] No match found');
+      showToast('Could not understand. Try again.', 'info');
+    };
+
+    // Show listening indicator
+    showToast(isIOS() ? 'Listening... Tap when done' : 'Listening... Speak now', 'info', 0);
     
-    state.speechRecognition.start();
+    // Start recognition
+    try {
+      recognition.start();
+      console.log('[AppyCrew OCR] Recognition started');
+    } catch (e) {
+      console.error('[AppyCrew OCR] Failed to start recognition:', e);
+      state.isListening = false;
+      updateFabState();
+      
+      // On iOS, if it fails, suggest the user try again
+      if (isIOS()) {
+        showToast('Tap the mic button and speak', 'info');
+      } else {
+        showToast('Could not start voice input', 'error');
+      }
+    }
   }
 
   function stopVoiceInput() {
-    if (state.speechRecognition && state.isListening) {
-      state.speechRecognition.stop();
+    if (state.speechRecognition) {
+      try {
+        if (state.isListening) {
+          state.speechRecognition.stop();
+        }
+      } catch (e) {
+        console.warn('[AppyCrew OCR] Error stopping recognition:', e);
+      }
     }
     state.isListening = false;
     updateFabState();
@@ -1293,18 +1398,32 @@
     
     fab.addEventListener('click', handleFabClick);
     
-    // Speed dial button handlers
-    speedDial.querySelector('.ac-speed-dial-scan').addEventListener('click', (e) => {
+    // Speed dial button handlers - use direct handlers for iOS compatibility
+    const scanBtn = speedDial.querySelector('.ac-speed-dial-scan');
+    const voiceBtn = speedDial.querySelector('.ac-speed-dial-voice');
+    
+    scanBtn.addEventListener('click', (e) => {
+      e.preventDefault();
       e.stopPropagation();
       closeFabMenu();
       openFileInput();
     });
     
-    speedDial.querySelector('.ac-speed-dial-voice').addEventListener('click', (e) => {
+    // Voice button needs direct event handler for iOS
+    voiceBtn.addEventListener('click', (e) => {
+      e.preventDefault();
       e.stopPropagation();
       closeFabMenu();
+      // Call startVoiceInput directly from user gesture (required for iOS)
       startVoiceInput();
     });
+    
+    // Touch events for iOS
+    voiceBtn.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      closeFabMenu();
+      startVoiceInput();
+    }, { passive: false });
     
     fabContainer.appendChild(speedDial);
     fabContainer.appendChild(fab);
