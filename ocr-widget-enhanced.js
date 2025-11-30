@@ -89,12 +89,31 @@
 
   function detectApiBase() {
     if (state.apiBase) return state.apiBase;
+    
+    // Check for explicit configuration
     if (window.APPYCREW_OCR_API_BASE) {
       state.apiBase = String(window.APPYCREW_OCR_API_BASE).replace(/\/+$/, "");
+      console.log('[AppyCrew OCR] Using configured API base:', state.apiBase);
       return state.apiBase;
     }
-    // Default to a placeholder - users should set APPYCREW_OCR_API_BASE
+    
+    // Try to detect from script src
+    const scripts = document.querySelectorAll('script[src*="ocr-widget"]');
+    for (const script of scripts) {
+      try {
+        const url = new URL(script.src);
+        state.apiBase = url.origin;
+        console.log('[AppyCrew OCR] Detected API base from script:', state.apiBase);
+        return state.apiBase;
+      } catch (e) {
+        // Ignore invalid URLs
+      }
+    }
+    
+    // Fallback to current origin (only works if widget is same-origin)
     state.apiBase = window.location.origin;
+    console.warn('[AppyCrew OCR] Using current origin as API base:', state.apiBase, 
+      '- Set window.APPYCREW_OCR_API_BASE if this is incorrect');
     return state.apiBase;
   }
 
@@ -897,44 +916,68 @@
 
   async function performOcr(imageData) {
     const apiBase = detectApiBase();
+    const endpoint = `${apiBase}/api/ocr`;
+    
+    console.log('[AppyCrew OCR] Calling OCR API:', endpoint);
     
     try {
-      const response = await fetch(`${apiBase}/api/ocr`, {
+      const response = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
         body: JSON.stringify({ image: imageData })
       });
       
+      console.log('[AppyCrew OCR] Response status:', response.status);
+      
       if (!response.ok) {
-        throw new Error(`OCR API error: ${response.status}`);
+        const errorText = await response.text().catch(() => 'Unknown error');
+        console.error('[AppyCrew OCR] API Error:', response.status, errorText);
+        throw new Error(`OCR API error: ${response.status} - ${errorText.substring(0, 100)}`);
       }
       
       const data = await response.json();
-      return data.text || data.result || '';
+      console.log('[AppyCrew OCR] OCR result:', data);
+      return data.text || data.result || data.content || '';
     } catch (error) {
-      console.error('OCR Error:', error);
+      console.error('[AppyCrew OCR] OCR Error:', error);
+      
+      // Provide more helpful error messages
+      if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+        throw new Error('Network error - check if API is reachable and CORS is configured');
+      }
       throw error;
     }
   }
 
   async function performVisionAnalysis(imageData) {
     const apiBase = detectApiBase();
+    const endpoint = `${apiBase}/api/vision`;
+    
+    console.log('[AppyCrew OCR] Calling Vision API:', endpoint);
     
     try {
-      const response = await fetch(`${apiBase}/api/vision`, {
+      const response = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
         body: JSON.stringify({ image: imageData })
       });
       
       if (!response.ok) {
+        console.warn('[AppyCrew OCR] Vision API returned:', response.status);
         return null; // Vision is optional
       }
       
       const data = await response.json();
+      console.log('[AppyCrew OCR] Vision result:', data);
       return data;
     } catch (error) {
-      console.warn('Vision API error (non-critical):', error);
+      console.warn('[AppyCrew OCR] Vision API error (non-critical):', error.message);
       return null;
     }
   }
@@ -948,19 +991,36 @@
     try {
       // Compress image
       showToast('Compressing...', 'info', 1000);
+      console.log('[AppyCrew OCR] Compressing image:', file.name, file.size, 'bytes');
       const compressedImage = await compressImage(file);
+      console.log('[AppyCrew OCR] Compressed to:', compressedImage.length, 'chars');
       
       // Run OCR and Vision in parallel
       showToast('Reading text...', 'info', 1500);
-      const [ocrText, visionData] = await Promise.all([
-        performOcr(compressedImage),
-        performVisionAnalysis(compressedImage).catch(() => null)
-      ]);
+      
+      let ocrText = '';
+      let visionData = null;
+      let ocrError = null;
+      
+      try {
+        [ocrText, visionData] = await Promise.all([
+          performOcr(compressedImage).catch(e => { ocrError = e; return ''; }),
+          performVisionAnalysis(compressedImage).catch(() => null)
+        ]);
+      } catch (e) {
+        ocrError = e;
+      }
       
       hideToast(loadingToast);
       
+      if (ocrError && !ocrText && !visionData) {
+        console.error('[AppyCrew OCR] Processing failed:', ocrError);
+        showToast(`Error: ${ocrError.message}`, 'error', 5000);
+        return;
+      }
+      
       if (!ocrText && !visionData) {
-        showToast('Could not read image. Try again.', 'error');
+        showToast('Could not read image. Try a clearer photo.', 'error');
         return;
       }
       
@@ -969,9 +1029,13 @@
       state.lastVision = visionData;
       state.voiceData = null;
       
+      console.log('[AppyCrew OCR] Building mappings from:', { ocrText, visionData });
+      
       // Build mappings
       const mappings = buildMappingsWithMultiPass(ocrText, visionData, null);
       state.mappings = mappings;
+      
+      console.log('[AppyCrew OCR] Found mappings:', mappings.length);
       
       if (mappings.length > 0) {
         showToast(`Found ${mappings.length} matches!`, 'success');
@@ -979,12 +1043,15 @@
         renderMappings();
       } else {
         showToast('No fields matched. Try clearer image.', 'info');
+        // Still open panel to show empty state
+        openPanel();
+        renderMappings();
       }
       
     } catch (error) {
       hideToast(loadingToast);
-      console.error('Image processing error:', error);
-      showToast('Processing failed. Try again.', 'error');
+      console.error('[AppyCrew OCR] Image processing error:', error);
+      showToast(`Processing failed: ${error.message}`, 'error', 5000);
     } finally {
       state.isProcessing = false;
       updateFabState();
@@ -1157,15 +1224,15 @@
   // ========== UI COMPONENTS ==========
 
   function updateFabVisibility() {
-    const fab = document.getElementById(FAB_ID);
-    if (!fab) return;
+    const container = document.getElementById(FAB_ID + '-container');
+    if (!container) return;
     
     const hasForm = state.forms.length > 0;
     
     if (hasForm && state.fabVisible) {
-      fab.classList.remove('ac-fab-hidden');
+      container.classList.remove('ac-fab-hidden');
     } else if (!hasForm) {
-      fab.classList.add('ac-fab-hidden');
+      container.classList.add('ac-fab-hidden');
     }
   }
 
@@ -1177,27 +1244,71 @@
     
     if (state.isProcessing) {
       fab.classList.add('ac-scanning');
+      closeFabMenu();
     } else if (state.isListening) {
       fab.classList.add('ac-listening');
+      closeFabMenu();
     }
   }
 
   function createFab() {
     if (document.getElementById(FAB_ID)) return;
     
+    // Create FAB container for speed dial
+    const fabContainer = document.createElement('div');
+    fabContainer.id = FAB_ID + '-container';
+    fabContainer.className = 'ac-fab-container';
+    
+    // Speed dial menu
+    const speedDial = document.createElement('div');
+    speedDial.className = 'ac-speed-dial';
+    speedDial.innerHTML = `
+      <button type="button" class="ac-speed-dial-btn ac-speed-dial-scan" aria-label="Scan Image">
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <path d="M9.5 6.5v3h-3v-3h3M11 5H5v6h6V5zm-1.5 9.5v3h-3v-3h3M11 13H5v6h6v-6zm6.5-6.5v3h-3v-3h3M19 5h-6v6h6V5zm-6 8h1.5v1.5H13V13zm1.5 1.5H16V16h-1.5v-1.5zM16 13h1.5v1.5H16V13zm-3 3h1.5v1.5H13V16zm1.5 1.5H16V19h-1.5v-1.5zM16 16h1.5v1.5H16V16zm1.5-1.5H19V16h-1.5v-1.5zm0 3H19V19h-1.5v-1.5zM19 13h-1.5v1.5H19V13z"/>
+        </svg>
+        <span>Scan</span>
+      </button>
+      <button type="button" class="ac-speed-dial-btn ac-speed-dial-voice" aria-label="Voice Input">
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+        </svg>
+        <span>Voice</span>
+      </button>
+    `;
+    
+    // Main FAB button
     const fab = document.createElement('button');
     fab.id = FAB_ID;
     fab.type = 'button';
     fab.setAttribute('aria-label', 'OCR Scanner');
     fab.innerHTML = `
-      <svg viewBox="0 0 24 24" fill="currentColor">
-        <path d="M9.4 10.5l4.77-8.26C13.47 2.09 12.75 2 12 2c-2.4 0-4.6.85-6.32 2.25l3.66 6.35.06-.1zM21.54 9c-.92-2.92-3.15-5.26-6-6.34L11.88 9h9.66zm.26 1h-7.49l.29.5 4.76 8.25C21 16.97 22 14.61 22 12c0-.69-.07-1.35-.2-2zM8.54 12l-3.9-6.75C3.01 7.03 2 9.39 2 12c0 .69.07 1.35.2 2h7.49l-1.15-2zm-6.08 3c.92 2.92 3.15 5.26 6 6.34L12.12 15H2.46zm11.27 0l-3.9 6.76c.7.15 1.42.24 2.17.24 2.4 0 4.6-.85 6.32-2.25l-3.66-6.35-.93 1.6z"/>
+      <svg class="ac-fab-icon-default" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M3 11h8V3H3v8zm2-6h4v4H5V5zm8-2v8h8V3h-8zm6 6h-4V5h4v4zM3 21h8v-8H3v8zm2-6h4v4H5v-4zm13 0h-2v2h2v2h-2v2h2v-2h2v2h2v-2h-2v-2h2v-2h-2v2h-2v-2zm-2-2h2v2h-2v-2zm2-2h2v2h-2V9z"/>
+      </svg>
+      <svg class="ac-fab-icon-close" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
       </svg>
     `;
     
     fab.addEventListener('click', handleFabClick);
     
-    document.body.appendChild(fab);
+    // Speed dial button handlers
+    speedDial.querySelector('.ac-speed-dial-scan').addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeFabMenu();
+      openFileInput();
+    });
+    
+    speedDial.querySelector('.ac-speed-dial-voice').addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeFabMenu();
+      startVoiceInput();
+    });
+    
+    fabContainer.appendChild(speedDial);
+    fabContainer.appendChild(fab);
+    document.body.appendChild(fabContainer);
     
     // Smart auto-hide on scroll
     let lastScrollY = window.scrollY;
@@ -1227,15 +1338,38 @@
         ticking = true;
       }
     });
+    
+    // Close menu when clicking outside
+    document.addEventListener('click', (e) => {
+      const container = document.getElementById(FAB_ID + '-container');
+      if (container && !container.contains(e.target)) {
+        closeFabMenu();
+      }
+    });
   }
 
-  function handleFabClick() {
+  function toggleFabMenu() {
+    const container = document.getElementById(FAB_ID + '-container');
+    if (container) {
+      container.classList.toggle('ac-fab-open');
+    }
+  }
+
+  function closeFabMenu() {
+    const container = document.getElementById(FAB_ID + '-container');
+    if (container) {
+      container.classList.remove('ac-fab-open');
+    }
+  }
+
+  function handleFabClick(e) {
+    e.stopPropagation();
     if (state.isProcessing) return;
     
     if (state.isPanelOpen) {
       closePanel();
     } else {
-      openFileInput();
+      toggleFabMenu();
     }
   }
 
@@ -1280,12 +1414,6 @@
         </div>
       </div>
       <div class="ac-footer">
-        <button class="ac-btn ac-btn-ghost ac-btn-voice" type="button">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right:6px;">
-            <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
-          </svg>
-          Voice
-        </button>
         <button class="ac-btn ac-btn-ghost ac-btn-undo" type="button" disabled>Undo</button>
         <button class="ac-btn ac-btn-primary ac-btn-apply" type="button">Apply</button>
       </div>
@@ -1295,7 +1423,6 @@
     panel.querySelector('.ac-close').addEventListener('click', closePanel);
     panel.querySelector('.ac-btn-apply').addEventListener('click', handleApply);
     panel.querySelector('.ac-btn-undo').addEventListener('click', handleUndo);
-    panel.querySelector('.ac-btn-voice').addEventListener('click', startVoiceInput);
     
     document.body.appendChild(panel);
   }
@@ -1407,46 +1534,126 @@
     const style = document.createElement('style');
     style.id = PANEL_ID + "-styles";
     style.textContent = `
-/* FAB Styles */
-#${FAB_ID} {
+/* FAB Container */
+.ac-fab-container {
   position: fixed;
-  right: 20px;
-  bottom: 20px;
+  right: 16px;
+  bottom: 16px;
   z-index: 2147483647;
-  width: 56px;
-  height: 56px;
-  border-radius: 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.ac-fab-container.ac-fab-hidden {
+  transform: translateY(100px);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Speed Dial Menu */
+.ac-speed-dial {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  opacity: 0;
+  transform: translateY(20px) scale(0.8);
+  pointer-events: none;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.ac-fab-container.ac-fab-open .ac-speed-dial {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+.ac-speed-dial-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: white;
+  border: none;
+  border-radius: 24px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.15);
+  cursor: pointer;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  color: #1e293b;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+
+.ac-speed-dial-btn:hover {
+  transform: scale(1.05);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.2);
+}
+
+.ac-speed-dial-btn svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+}
+
+.ac-speed-dial-scan { color: #6366f1; }
+.ac-speed-dial-voice { color: #ec4899; }
+
+/* Main FAB Button - Smaller */
+#${FAB_ID} {
+  width: 48px;
+  height: 48px;
+  border-radius: 24px;
   border: none;
   background: #111827;
   color: white;
-  box-shadow: 0 10px 25px rgba(0,0,0,0.2), 0 0 0 1px rgba(0,0,0,0.05);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.2);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   font-family: system-ui, -apple-system, sans-serif;
+  position: relative;
 }
 
 #${FAB_ID}:hover {
-  transform: translateY(-2px) scale(1.05);
-  box-shadow: 0 20px 35px rgba(0,0,0,0.25);
+  transform: scale(1.08);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.25);
 }
 
 #${FAB_ID}:active {
-  transform: translateY(0) scale(0.98);
-}
-
-#${FAB_ID}.ac-fab-hidden {
-  transform: translateY(100px) scale(0.8);
-  opacity: 0;
-  pointer-events: none;
+  transform: scale(0.95);
 }
 
 #${FAB_ID} svg {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   fill: currentColor;
+  transition: all 0.3s;
+}
+
+#${FAB_ID} .ac-fab-icon-close {
+  position: absolute;
+  opacity: 0;
+  transform: rotate(-90deg);
+}
+
+.ac-fab-container.ac-fab-open #${FAB_ID} {
+  background: #374151;
+}
+
+.ac-fab-container.ac-fab-open #${FAB_ID} .ac-fab-icon-default {
+  opacity: 0;
+  transform: rotate(90deg);
+}
+
+.ac-fab-container.ac-fab-open #${FAB_ID} .ac-fab-icon-close {
+  opacity: 1;
+  transform: rotate(0);
 }
 
 #${FAB_ID}.ac-scanning {
@@ -1461,22 +1668,22 @@
 
 @keyframes ac-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.4); }
-  50% { box-shadow: 0 0 0 20px transparent; }
+  50% { box-shadow: 0 0 0 12px transparent; }
 }
 
 /* Panel */
 #${PANEL_ID} {
   position: fixed;
-  right: 20px;
-  bottom: 90px;
-  width: 380px;
-  max-width: calc(100vw - 40px);
-  max-height: calc(100vh - 120px);
+  right: 16px;
+  bottom: 76px;
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 100px);
   background: white;
   border-radius: 16px;
   box-shadow: 0 20px 60px rgba(0,0,0,0.3);
   font-family: system-ui, -apple-system, sans-serif;
-  z-index: 2147483647;
+  z-index: 2147483646;
   overflow: hidden;
   opacity: 0;
   pointer-events: none;
@@ -1729,24 +1936,41 @@
 
 /* Mobile Responsive */
 @media (max-width: 480px) {
+  .ac-fab-container {
+    right: 12px;
+    bottom: 12px;
+  }
+  
   #${FAB_ID} {
-    right: 16px;
-    bottom: 16px;
-    width: 52px;
-    height: 52px;
+    width: 44px;
+    height: 44px;
+  }
+  
+  #${FAB_ID} svg {
+    width: 20px;
+    height: 20px;
+  }
+  
+  .ac-speed-dial-btn span {
+    display: none;
+  }
+  
+  .ac-speed-dial-btn {
+    padding: 10px;
+    border-radius: 50%;
   }
   
   #${PANEL_ID} {
-    right: 10px;
-    left: 10px;
-    bottom: 80px;
+    right: 8px;
+    left: 8px;
+    bottom: 72px;
     width: auto;
     max-width: none;
   }
   
   #${TOAST_CONTAINER_ID} {
-    right: 10px;
-    left: 10px;
+    right: 8px;
+    left: 8px;
   }
   
   .ac-toast {
