@@ -19,6 +19,33 @@
   if (window.__APPYCREW_OCR_WIDGET_INITED__) return;
   window.__APPYCREW_OCR_WIDGET_INITED__ = true;
 
+  // ========== CONFIGURATION ==========
+  const defaultConfig = {
+    // API
+    apiBase: null,
+    
+    // UI
+    fabSize: 40,
+    fabPosition: 'right',  // 'left' or 'right'
+    theme: 'light',
+    
+    // Behavior
+    maxRecordingTime: 10,
+    autoStopSilence: 2,
+    compressQuality: 0.7,
+    maxImageWidth: 800,
+    
+    // Features
+    enableVoice: true,
+    enableTraining: true,
+    skipVisionForLabels: true,
+    enableHaptics: true,
+    showQuickPhrases: true,
+  };
+  
+  // Merge user config
+  const config = { ...defaultConfig, ...(window.APPYCREW_OCR_CONFIG || {}) };
+
   const PANEL_ID = "appycrew-ocr-panel";
   const FAB_ID = "appycrew-ocr-fab";
   const TOAST_CONTAINER_ID = "appycrew-toast-container";
@@ -45,6 +72,13 @@
     fabVisible: true,
     lastScrollY: 0,
     originalValues: new Map(),
+    // Result caching
+    resultCache: new Map(),
+    // Remember last values for quick-fill
+    lastValues: {
+      location: null,
+      item: null
+    },
     fieldClassifier: {
       trainingData: [],
       fieldPatterns: {},  // Learned patterns per field type
@@ -340,8 +374,8 @@
     return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
-  // Image compression - aggressive for speed
-  async function compressImage(file, maxWidth = 800, quality = 0.7) {
+  // Image compression - WebP with JPEG fallback, aggressive for speed
+  async function compressImage(file, maxWidth = config.maxImageWidth, quality = config.compressQuality) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onerror = () => reject(new Error('Failed to read file'));
@@ -353,14 +387,14 @@
           let width = img.width;
           let height = img.height;
           
-          // More aggressive resize for speed
+          // Aggressive resize for speed
           if (width > maxWidth) {
             height *= maxWidth / width;
             width = maxWidth;
           }
           
           // Also limit height
-          const maxHeight = 800;
+          const maxHeight = config.maxImageWidth;
           if (height > maxHeight) {
             width *= maxHeight / height;
             height = maxHeight;
@@ -370,14 +404,20 @@
           canvas.height = height;
           const ctx = canvas.getContext('2d');
           
-          // Use faster image smoothing
+          // Faster image smoothing
           ctx.imageSmoothingEnabled = true;
           ctx.imageSmoothingQuality = 'medium';
           
           ctx.drawImage(img, 0, 0, width, height);
           
-          // Use lower quality JPEG for speed
-          const result = canvas.toDataURL('image/jpeg', quality);
+          // Try WebP first (smaller), fallback to JPEG
+          let result;
+          if (canvas.toDataURL('image/webp').startsWith('data:image/webp')) {
+            result = canvas.toDataURL('image/webp', quality);
+          } else {
+            result = canvas.toDataURL('image/jpeg', quality);
+          }
+          
           console.log('[AppyCrew OCR] Compressed:', file.size, '→', Math.round(result.length * 0.75), 'bytes');
           resolve(result);
         };
@@ -385,6 +425,31 @@
       };
       reader.readAsDataURL(file);
     });
+  }
+
+  // Simple hash for caching
+  function simpleHash(str) {
+    let hash = 0;
+    for (let i = 0; i < Math.min(str.length, 1000); i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash;
+    }
+    return hash.toString(36);
+  }
+
+  // Haptic feedback for mobile
+  function haptic(type = 'light') {
+    if (!config.enableHaptics) return;
+    if (navigator.vibrate) {
+      const patterns = {
+        light: [10],
+        medium: [20],
+        success: [10, 50, 10],
+        error: [50, 30, 50]
+      };
+      navigator.vibrate(patterns[type] || patterns.light);
+    }
   }
 
   // ========== TOAST NOTIFICATIONS ==========
@@ -1141,6 +1206,13 @@
     const apiBase = detectApiBase();
     const endpoint = `${apiBase}/api/ocr`;
     
+    // Check cache first
+    const cacheKey = simpleHash(imageData);
+    if (state.resultCache.has(cacheKey)) {
+      console.log('[AppyCrew OCR] Using cached OCR result');
+      return state.resultCache.get(cacheKey);
+    }
+    
     console.log('[AppyCrew OCR] Calling OCR API:', endpoint);
     
     try {
@@ -1158,18 +1230,25 @@
       if (!response.ok) {
         const errorText = await response.text().catch(() => 'Unknown error');
         console.error('[AppyCrew OCR] API Error:', response.status, errorText);
-        throw new Error(`OCR API error: ${response.status} - ${errorText.substring(0, 100)}`);
+        throw new Error(`OCR API error: ${response.status}`);
       }
       
       const data = await response.json();
-      console.log('[AppyCrew OCR] OCR result:', data);
-      return data.text || data.result || data.content || '';
+      const result = data.text || data.result || data.content || '';
+      
+      // Cache the result (keep max 10)
+      if (state.resultCache.size > 10) {
+        const firstKey = state.resultCache.keys().next().value;
+        state.resultCache.delete(firstKey);
+      }
+      state.resultCache.set(cacheKey, result);
+      
+      console.log('[AppyCrew OCR] OCR result cached');
+      return result;
     } catch (error) {
       console.error('[AppyCrew OCR] OCR Error:', error);
-      
-      // Provide more helpful error messages
       if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
-        throw new Error('Network error - check if API is reachable and CORS is configured');
+        throw new Error('Network error - check connection');
       }
       throw error;
     }
@@ -1208,6 +1287,7 @@
   async function processImage(file) {
     state.isProcessing = true;
     updateFabState();
+    haptic('light');
     
     const loadingToast = showToast('Processing...', 'loading', 0);
     
@@ -1235,26 +1315,34 @@
       
       let visionData = null;
       
-      // STEP 2: Only call Vision if OCR quality is poor (Fix #6)
-      // This saves money and time when we have a good label
-      if (ocrQuality.needsVision) {
+      // STEP 2: Only call Vision if OCR quality is poor AND config allows
+      if (config.skipVisionForLabels && ocrQuality.needsVision) {
         console.log('[AppyCrew OCR] Low OCR quality, calling Vision API');
-        const visionToast = showToast('Analyzing image...', 'loading', 0);
+        const visionToast = showToast('Analyzing...', 'loading', 0);
         try {
           visionData = await performVisionAnalysis(compressedImage);
         } catch (e) {
           console.warn('[AppyCrew OCR] Vision failed:', e.message);
         }
         hideToast(visionToast);
+      } else if (!config.skipVisionForLabels) {
+        // Config says always use Vision
+        try {
+          visionData = await performVisionAnalysis(compressedImage);
+        } catch (e) {
+          console.warn('[AppyCrew OCR] Vision failed:', e.message);
+        }
       }
       
       if (ocrError && !ocrText && !visionData) {
-        showToast(`Error: ${ocrError.message}`, 'error', 5000);
+        haptic('error');
+        showToast(`Error: ${ocrError.message}`, 'error', 3000);
         return;
       }
       
       if (!ocrText && !visionData) {
-        showToast('Could not read image. Try a clearer photo.', 'error');
+        haptic('error');
+        showToast('Could not read image. Try clearer photo.', 'error');
         return;
       }
       
@@ -1267,13 +1355,21 @@
       const mappings = buildMappingsWithMultiPass(ocrText, visionData, null);
       state.mappings = mappings;
       
+      // Remember last location for quick-fill
+      const locationMapping = mappings.find(m => m.typeHint === 'location');
+      if (locationMapping) {
+        state.lastValues.location = locationMapping.value;
+      }
+      
       console.log('[AppyCrew OCR] Found mappings:', mappings.length);
       
       if (mappings.length > 0) {
+        haptic('success');
         showToast(`Found ${mappings.length} matches!`, 'success');
         openPanel();
         renderMappings();
       } else {
+        haptic('medium');
         showToast('No fields matched. Try clearer image.', 'info');
         openPanel();
         renderMappings();
@@ -1281,8 +1377,9 @@
       
     } catch (error) {
       hideToast(loadingToast);
+      haptic('error');
       console.error('[AppyCrew OCR] Image processing error:', error);
-      showToast(`Processing failed: ${error.message}`, 'error', 5000);
+      showToast(`Failed: ${error.message}`, 'error', 3000);
     } finally {
       state.isProcessing = false;
       updateFabState();
@@ -1362,18 +1459,25 @@
       stopVoiceInput();
       return;
     }
+    
+    if (!config.enableVoice) {
+      showToast('Voice input disabled', 'info');
+      return;
+    }
 
     // Check for HTTPS
     if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-      showToast('Voice requires HTTPS connection', 'error');
+      showToast('Voice requires HTTPS', 'error');
       return;
     }
 
     // Check for MediaRecorder support
     if (!isMediaRecorderSupported()) {
-      showToast('Voice recording not supported', 'error');
+      showToast('Voice not supported', 'error');
       return;
     }
+    
+    haptic('light');
 
     // Request microphone permission
     navigator.mediaDevices.getUserMedia({ 
@@ -1388,8 +1492,9 @@
     })
     .catch(err => {
       console.error('[AppyCrew OCR] Microphone error:', err);
+      haptic('error');
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        showToast('Microphone access denied. Check browser settings.', 'error');
+        showToast('Microphone access denied', 'error');
       } else if (err.name === 'NotFoundError') {
         showToast('No microphone found', 'error');
       } else {
@@ -1439,7 +1544,7 @@
         if (average < 5) {  // Silence threshold
           if (!silenceStart) {
             silenceStart = Date.now();
-          } else if (Date.now() - silenceStart > 2000) {  // 2 seconds of silence
+          } else if (Date.now() - silenceStart > (config.autoStopSilence * 1000)) {
             console.log('[AppyCrew OCR] Silence detected, stopping');
             stopVoiceInput();
             return;
@@ -1488,6 +1593,7 @@
     
     state.mediaRecorder.onerror = (e) => {
       console.error('[AppyCrew OCR] Recording error:', e);
+      haptic('error');
       showToast('Recording failed', 'error');
       stopVoiceInput();
     };
@@ -1496,16 +1602,16 @@
     state.mediaRecorder.start(1000);  // Collect in 1s chunks
     console.log('[AppyCrew OCR] Recording started');
     
-    // Brief toast that auto-dismisses (Fix #2)
+    // Brief toast that auto-dismisses
     showToast('🎤 Recording...', 'info', 1500);
     
-    // Auto-stop after 10 seconds to save credits (Fix #4)
+    // Auto-stop after configured time
     state.recordingTimeout = setTimeout(() => {
       if (state.isListening) {
-        console.log('[AppyCrew OCR] Auto-stopping after 10s');
+        console.log('[AppyCrew OCR] Auto-stopping after', config.maxRecordingTime, 's');
         stopVoiceInput();
       }
-    }, 10000);
+    }, config.maxRecordingTime * 1000);
   }
 
   function stopVoiceInput() {
@@ -1923,11 +2029,13 @@
     
     const panel = document.createElement('div');
     panel.id = PANEL_ID;
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-label', 'OCR Results');
     panel.innerHTML = `
       <div class="ac-header">
         <div class="ac-title">
           <div class="ac-title-main">OCR Results</div>
-          <div class="ac-title-sub">Review and apply matches</div>
+          <div class="ac-title-sub">Edit values to improve accuracy</div>
         </div>
         <button class="ac-close" type="button" aria-label="Close">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -1935,10 +2043,17 @@
           </svg>
         </button>
       </div>
+      <div class="ac-quick-actions" style="display:none;">
+        <button class="ac-quick-btn" data-action="same-location" type="button">
+          📍 Same Location
+        </button>
+      </div>
       <div class="ac-body">
         <div class="ac-mappings"></div>
         <div class="ac-empty" style="display:none;">
-          <p>No matches found. Try a clearer image or use voice input.</p>
+          <div class="ac-empty-icon">📷</div>
+          <p>No matches found</p>
+          <p class="ac-empty-hint">Try a clearer photo or use voice input</p>
         </div>
       </div>
       <div class="ac-footer">
@@ -1952,7 +2067,48 @@
     panel.querySelector('.ac-btn-apply').addEventListener('click', handleApply);
     panel.querySelector('.ac-btn-undo').addEventListener('click', handleUndo);
     
+    // Quick action: Same Location
+    panel.querySelector('[data-action="same-location"]').addEventListener('click', () => {
+      if (state.lastValues.location) {
+        addLocationMapping(state.lastValues.location);
+        haptic('light');
+      }
+    });
+    
     document.body.appendChild(panel);
+  }
+
+  // Add a location mapping using the last known location
+  function addLocationMapping(location) {
+    if (!state.activeForm) return;
+    
+    const fields = getCandidateFields(state.activeForm);
+    const locationField = fields.find(f => 
+      f.typeHint === 'location' || 
+      f.labelLower.includes('location') || 
+      f.labelLower.includes('room')
+    );
+    
+    if (locationField) {
+      // Check if already in mappings
+      const existing = state.mappings.find(m => m.typeHint === 'location');
+      if (existing) {
+        existing.value = location;
+        existing.confidence = 1.0;
+      } else {
+        state.mappings.push({
+          el: locationField.el,
+          label: locationField.label,
+          typeHint: 'location',
+          value: location,
+          confidence: 1.0,
+          checked: true,
+          method: 'quick-action'
+        });
+      }
+      renderMappings();
+      showToast(`Location: ${location}`, 'success', 1500);
+    }
   }
 
   function openPanel() {
@@ -1977,6 +2133,15 @@
     
     const container = panel.querySelector('.ac-mappings');
     const emptyState = panel.querySelector('.ac-empty');
+    const quickActions = panel.querySelector('.ac-quick-actions');
+    
+    // Show quick actions if we have a last location and no location in current mappings
+    const hasLocationMapping = state.mappings.some(m => m.typeHint === 'location');
+    if (config.showQuickPhrases && state.lastValues.location && !hasLocationMapping) {
+      quickActions.style.display = 'flex';
+    } else {
+      quickActions.style.display = 'none';
+    }
     
     if (!state.mappings || state.mappings.length === 0) {
       container.innerHTML = '';
@@ -2029,19 +2194,22 @@
         
         if (state.mappings[index] && newValue !== original) {
           // User corrected a value - learn from this!
-          state.fieldClassifier.learnCorrection(
-            state.mappings[index].label,
-            state.mappings[index].typeHint,
-            original,
-            newValue
-          );
+          if (config.enableTraining) {
+            state.fieldClassifier.learnCorrection(
+              state.mappings[index].label,
+              state.mappings[index].typeHint,
+              original,
+              newValue
+            );
+          }
           
           // Update the mapping
           state.mappings[index].value = newValue;
-          state.mappings[index].confidence = 1.0; // User-corrected = 100% confidence
+          state.mappings[index].confidence = 1.0;
           e.target.dataset.original = newValue;
           
           // Visual feedback
+          haptic('light');
           e.target.style.borderColor = '#22c55e';
           setTimeout(() => { e.target.style.borderColor = ''; }, 1000);
         }
@@ -2059,15 +2227,34 @@
     const applied = applyMappings(state.mappings);
     
     if (applied > 0) {
-      showToast(`Applied ${applied} field(s)`, 'success');
+      haptic('success');
+      showToast(`✓ Applied ${applied} field${applied > 1 ? 's' : ''}`, 'success', 1500);
       
       // Enable undo button
       const undoBtn = document.querySelector('.ac-btn-undo');
       if (undoBtn) undoBtn.disabled = false;
       
+      // Remember values for quick-fill
+      for (const mapping of state.mappings) {
+        if (mapping.checked && mapping.typeHint === 'location') {
+          state.lastValues.location = mapping.value;
+        }
+        if (mapping.checked && mapping.typeHint === 'item') {
+          state.lastValues.item = mapping.value;
+        }
+      }
+      
+      // Learn from successful apply
+      if (config.enableTraining) {
+        for (const mapping of state.mappings.filter(m => m.checked)) {
+          state.fieldClassifier.learn(mapping.label, mapping.typeHint, mapping.value);
+        }
+      }
+      
       closePanel();
     } else {
-      showToast('No fields to apply', 'info');
+      haptic('error');
+      showToast('No fields selected', 'info');
     }
   }
 
@@ -2075,7 +2262,8 @@
     const undone = undoMappings();
     
     if (undone > 0) {
-      showToast(`Undone ${undone} field(s)`, 'success');
+      haptic('medium');
+      showToast(`↩ Undone ${undone} field${undone > 1 ? 's' : ''}`, 'success', 1500);
       
       // Disable undo button
       const undoBtn = document.querySelector('.ac-btn-undo');
@@ -2094,7 +2282,7 @@
 /* FAB Container */
 .ac-fab-container {
   position: fixed;
-  right: 16px;
+  ${config.fabPosition === 'left' ? 'left' : 'right'}: 16px;
   bottom: 16px;
   z-index: 2147483647;
   display: flex;
@@ -2231,7 +2419,7 @@
 /* Panel */
 #${PANEL_ID} {
   position: fixed;
-  right: 16px;
+  ${config.fabPosition === 'left' ? 'left' : 'right'}: 16px;
   bottom: 76px;
   width: 360px;
   max-width: calc(100vw - 32px);
@@ -2404,6 +2592,46 @@
   text-align: center;
   padding: 30px 20px;
   color: #64748b;
+}
+
+#${PANEL_ID} .ac-empty-icon {
+  font-size: 40px;
+  margin-bottom: 12px;
+  opacity: 0.5;
+}
+
+#${PANEL_ID} .ac-empty p {
+  margin: 0 0 4px 0;
+}
+
+#${PANEL_ID} .ac-empty-hint {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+#${PANEL_ID} .ac-quick-actions {
+  display: flex;
+  gap: 8px;
+  padding: 12px 20px;
+  background: #f0fdf4;
+  border-bottom: 1px solid #bbf7d0;
+}
+
+#${PANEL_ID} .ac-quick-btn {
+  padding: 6px 12px;
+  background: white;
+  border: 1px solid #86efac;
+  border-radius: 16px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #166534;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+#${PANEL_ID} .ac-quick-btn:hover {
+  background: #dcfce7;
+  border-color: #4ade80;
 }
 
 #${PANEL_ID} .ac-footer {
@@ -2646,22 +2874,13 @@
     
     // Training API
     train: {
-      // Export all training data (for backup or sharing between devices)
       export: () => state.fieldClassifier.export(),
-      
-      // Import training data
       import: (data) => state.fieldClassifier.import(data),
-      
-      // Reset all training
       reset: () => state.fieldClassifier.reset(),
-      
-      // Manually teach a mapping
       teach: (fieldLabel, fieldType, value) => {
         state.fieldClassifier.learn(fieldLabel, fieldType, value);
         state.fieldClassifier.save();
       },
-      
-      // Get training stats
       stats: () => ({
         entries: state.fieldClassifier.trainingData.length,
         patterns: Object.keys(state.fieldClassifier.fieldPatterns).length,
@@ -2671,13 +2890,34 @@
     
     // Configuration
     config: {
+      get: () => ({ ...config }),
+      set: (key, value) => { 
+        if (key in config) {
+          config[key] = value;
+          console.log('[AppyCrew OCR] Config updated:', key, '=', value);
+        }
+      },
       setApiBase: (url) => { state.apiBase = url; },
       getApiBase: () => detectApiBase()
     },
     
+    // Quick actions
+    quick: {
+      sameLocation: () => {
+        if (state.lastValues.location) {
+          addLocationMapping(state.lastValues.location);
+        }
+      },
+      getLastValues: () => ({ ...state.lastValues }),
+      clearCache: () => {
+        state.resultCache.clear();
+        console.log('[AppyCrew OCR] Cache cleared');
+      }
+    },
+    
     // Debug
     getState: () => ({ ...state }),
-    version: '10.2.0'
+    version: '10.3.0'
   };
 
 })();
