@@ -13,6 +13,8 @@
  */
 
 (function () {
+  "use strict";
+  
   if (typeof window === "undefined") return;
   if (window.__APPYCREW_OCR_WIDGET_INITED__) return;
   window.__APPYCREW_OCR_WIDGET_INITED__ = true;
@@ -35,7 +37,11 @@
     voiceData: null,
     isListening: false,
     speechRecognition: null,
-    ui: null,
+    isPanelOpen: false,
+    isProcessing: false,
+    fabVisible: true,
+    lastScrollY: 0,
+    originalValues: new Map(),
     fieldClassifier: {
       trainingData: [],
       learn: function(fieldLabel, fieldType, correctValue) {
@@ -87,12 +93,17 @@
       state.apiBase = String(window.APPYCREW_OCR_API_BASE).replace(/\/+$/, "");
       return state.apiBase;
     }
+    // Default to a placeholder - users should set APPYCREW_OCR_API_BASE
     state.apiBase = window.location.origin;
     return state.apiBase;
   }
 
   // Levenshtein distance for fuzzy matching
   function levenshtein(a, b) {
+    if (!a || !b) return Math.max((a || '').length, (b || '').length);
+    a = a.toLowerCase();
+    b = b.toLowerCase();
+    
     const matrix = [];
     for (let i = 0; i <= b.length; i++) {
       matrix[i] = [i];
@@ -118,6 +129,7 @@
 
   // Semantic similarity (Jaccard)
   function semanticSimilarity(text1, text2) {
+    if (!text1 || !text2) return 0;
     const tokens1 = new Set(text1.toLowerCase().split(/\W+/).filter(Boolean));
     const tokens2 = new Set(text2.toLowerCase().split(/\W+/).filter(Boolean));
     
@@ -129,6 +141,7 @@
 
   // Fuzzy match against keywords
   function fuzzyMatch(text, keywords, threshold = 2) {
+    if (!text) return null;
     const lower = text.toLowerCase();
     const words = lower.split(/\s+/);
     
@@ -144,12 +157,18 @@
     return null;
   }
 
+  function escapeRegex(str) {
+    return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
   // Image compression
   async function compressImage(file, maxWidth = 1200, quality = 0.85) {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const reader = new FileReader();
+      reader.onerror = () => reject(new Error('Failed to read file'));
       reader.onload = (e) => {
         const img = new Image();
+        img.onerror = () => reject(new Error('Failed to load image'));
         img.onload = () => {
           const canvas = document.createElement('canvas');
           let width = img.width;
@@ -203,28 +222,44 @@
     };
     
     toast.innerHTML = `
-      <div class="ac-toast-icon">${icons[type]}</div>
+      <div class="ac-toast-icon">${icons[type] || icons.info}</div>
       <div class="ac-toast-message">${message}</div>
     `;
     
     container.appendChild(toast);
     
-    setTimeout(() => toast.classList.add('ac-toast-show'), 10);
+    // Trigger animation
+    requestAnimationFrame(() => {
+      toast.classList.add('ac-toast-show');
+    });
     
     if (duration > 0) {
       setTimeout(() => {
         toast.classList.remove('ac-toast-show');
-        setTimeout(() => toast.remove(), 300);
+        setTimeout(() => {
+          if (toast.parentNode) toast.remove();
+        }, 300);
       }, duration);
     }
     
     return toast;
   }
 
+  function hideToast(toast) {
+    if (!toast) return;
+    toast.classList.remove('ac-toast-show');
+    setTimeout(() => {
+      if (toast.parentNode) toast.remove();
+    }, 300);
+  }
+
   // ========== FIELD DETECTION & MAPPING ==========
 
   function isElementVisible(el) {
     if (!el || !el.getBoundingClientRect) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    
     const rect = el.getBoundingClientRect();
     const vh = window.innerHeight || document.documentElement.clientHeight;
     if (rect.bottom <= 0 || rect.top >= vh) return false;
@@ -266,6 +301,10 @@
         score += 1000;
       }
       
+      // Bonus for having visible input fields
+      const inputs = f.querySelectorAll('input, textarea, select');
+      score += inputs.length * 10;
+      
       if (score > bestScore) {
         bestScore = score;
         best = f;
@@ -275,6 +314,8 @@
   }
 
   function getCandidateFields(form) {
+    if (!form) return [];
+    
     const els = Array.prototype.slice.call(
       form.querySelectorAll("input, textarea, select")
     );
@@ -284,8 +325,8 @@
     for (let i = 0; i < els.length; i++) {
       const el = els[i];
       if (!isElementVisible(el)) continue;
-      if (el.disabled) continue;
-      if (el.type === "hidden") continue;
+      if (el.disabled || el.readOnly) continue;
+      if (el.type === "hidden" || el.type === "submit" || el.type === "button") continue;
 
       const key = el.tagName + ":" + (el.name || el.id || i);
       if (seen.has(key)) continue;
@@ -322,29 +363,44 @@
         labelText = prev.textContent.trim();
       }
     }
+    
+    // Check for parent with label-like class
+    if (!labelText) {
+      const parent = el.closest('.form-group, .field-group, .input-group');
+      if (parent) {
+        const label = parent.querySelector('label, .label, .field-label');
+        if (label) labelText = label.textContent.trim();
+      }
+    }
 
     const placeholder = (el.getAttribute("placeholder") || "").trim();
     const dataLabel = (el.getAttribute("data-label") || "").trim();
-    const allLabel = [labelText, placeholder, dataLabel].filter(Boolean).join(" / ");
-
+    const ariaLabel = (el.getAttribute("aria-label") || "").trim();
+    const name = (el.name || "").replace(/[-_]/g, ' ').trim();
+    
+    const allLabel = [labelText, placeholder, dataLabel, ariaLabel, name].filter(Boolean).join(" / ");
     const typeHint = (el.getAttribute("data-appycrew-type") || "").trim().toLowerCase();
 
     return {
       el: el,
       label: allLabel || el.name || el.id || "Field",
       labelLower: (allLabel || "").toString().toLowerCase(),
-      typeHint: typeHint
+      typeHint: typeHint,
+      inputType: el.type || el.tagName.toLowerCase()
     };
   }
 
   // Field synonyms for semantic matching
   function getFieldSynonyms(fieldType) {
     const synonymMap = {
-      item: ['item', 'product', 'object', 'article', 'furniture', 'name', 'type', 'what'],
-      location: ['location', 'room', 'place', 'where', 'area', 'site', 'position'],
-      quantity: ['qty', 'quantity', 'count', 'number', 'amount', 'how many', 'no of', 'no.'],
-      description: ['description', 'details', 'notes', 'info', 'condition', 'appearance', 'desc'],
-      notes: ['notes', 'comments', 'remarks', 'additional', 'extra', 'other']
+      item: ['item', 'product', 'object', 'article', 'furniture', 'name', 'type', 'what', 'thing', 'piece'],
+      location: ['location', 'room', 'place', 'where', 'area', 'site', 'position', 'from', 'origin'],
+      quantity: ['qty', 'quantity', 'count', 'number', 'amount', 'how many', 'no of', 'no.', 'num', 'units'],
+      description: ['description', 'details', 'notes', 'info', 'condition', 'appearance', 'desc', 'about'],
+      notes: ['notes', 'comments', 'remarks', 'additional', 'extra', 'other', 'memo'],
+      dimensions: ['dimensions', 'size', 'width', 'height', 'length', 'depth', 'measurement'],
+      weight: ['weight', 'kg', 'lbs', 'pounds', 'kilos', 'mass'],
+      color: ['color', 'colour', 'hue', 'shade']
     };
     
     return synonymMap[fieldType] || [];
@@ -380,25 +436,66 @@
       }
     }
     
+    // Input type compatibility bonus
+    if (candidateType === 'quantity' && fieldMeta.inputType === 'number') {
+      score += 3;
+    }
+    
     return score;
   }
 
   // ========== DATA EXTRACTION ==========
 
   const LOCATION_KEYWORDS = [
-    "kitchen", "dining", "lounge", "living", "living room", "hall", "hallway",
-    "landing", "stairs", "bedroom", "master bedroom", "mbr", "main bedroom",
-    "guest bedroom", "bathroom", "ensuite", "office", "study", "garage",
-    "loft", "attic", "garden", "shed", "storage", "store", "cupboard"
+    "kitchen", "dining", "dining room", "lounge", "living", "living room", 
+    "hall", "hallway", "landing", "stairs", "staircase",
+    "bedroom", "master bedroom", "mbr", "main bedroom", "guest bedroom", "kids room",
+    "bathroom", "ensuite", "en-suite", "toilet", "wc",
+    "office", "study", "home office", "garage", "car port",
+    "loft", "attic", "basement", "cellar", "garden", "patio", "yard",
+    "shed", "storage", "store", "cupboard", "closet", "utility", "laundry",
+    "conservatory", "sunroom", "porch", "entrance", "foyer"
   ];
 
   const ITEM_KEYWORDS = [
-    "wardrobe", "sofa", "couch", "table", "dining table", "chair", "desk",
-    "bed", "mattress", "headboard", "chest", "drawers", "chest of drawers",
-    "sideboard", "cabinet", "cupboard", "bookcase", "shelf", "shelving",
-    "tv", "television", "picture", "painting", "mirror", "lamp", "box",
-    "carton", "crate", "ladder", "bicycle", "bike"
+    "wardrobe", "armoire", "sofa", "couch", "settee", "loveseat",
+    "table", "dining table", "coffee table", "side table", "end table",
+    "chair", "armchair", "recliner", "desk", "desk chair", "office chair",
+    "bed", "mattress", "headboard", "footboard", "bed frame",
+    "chest", "drawers", "chest of drawers", "dresser", "nightstand",
+    "sideboard", "buffet", "cabinet", "cupboard", "pantry",
+    "bookcase", "bookshelf", "shelf", "shelving", "shelves",
+    "tv", "television", "tv stand", "entertainment center",
+    "picture", "painting", "artwork", "mirror", "lamp", "floor lamp",
+    "box", "carton", "crate", "container", "bin",
+    "ladder", "bicycle", "bike", "exercise equipment", "treadmill",
+    "washer", "dryer", "washing machine", "refrigerator", "fridge", "freezer",
+    "microwave", "oven", "stove", "dishwasher"
   ];
+
+  const BRAND_NOISE = [
+    "appycrew", "fragile", "handle with care", "this side up", 
+    "heavy", "do not stack", "keep dry"
+  ];
+
+  function cleanOcrText(text) {
+    if (!text) return "";
+    let cleaned = text;
+    
+    // Remove brand noise
+    for (const noise of BRAND_NOISE) {
+      const regex = new RegExp('\\b' + escapeRegex(noise) + '\\b', 'gi');
+      cleaned = cleaned.replace(regex, '');
+    }
+    
+    // Clean up whitespace
+    cleaned = cleaned
+      .replace(/\n+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    
+    return cleaned;
+  }
 
   function extractStructuredData(text, vision, voice) {
     const extracted = {
@@ -411,12 +508,27 @@
     };
     
     // Voice data has highest confidence
-    if (voice) {
-      extracted.item = voice.item;
-      extracted.location = voice.location;
-      extracted.description = voice.description;
-      extracted.notes = voice.notes;
-      extracted.confidence = { item: 0.95, location: 0.95, description: 0.9, notes: 0.9 };
+    if (voice && Object.keys(voice).length > 0) {
+      if (voice.item) {
+        extracted.item = voice.item;
+        extracted.confidence.item = 0.95;
+      }
+      if (voice.location) {
+        extracted.location = voice.location;
+        extracted.confidence.location = 0.95;
+      }
+      if (voice.description) {
+        extracted.description = voice.description;
+        extracted.confidence.description = 0.9;
+      }
+      if (voice.notes) {
+        extracted.notes = voice.notes;
+        extracted.confidence.notes = 0.9;
+      }
+      if (voice.quantity) {
+        extracted.quantity = voice.quantity;
+        extracted.confidence.quantity = 0.95;
+      }
       return extracted;
     }
     
@@ -429,33 +541,52 @@
         extracted.description = vision.description;
         extracted.confidence.description = 0.8;
       }
-    }
-    
-    // OCR text extraction
-    const qtyMatch = text.match(/\b(\d{1,3})\s*[xX×]?\s*(pcs?|pieces?|items?|boxes?)?\b/i);
-    if (qtyMatch) {
-      extracted.quantity = qtyMatch[1];
-      extracted.confidence.quantity = 0.9;
-    }
-    
-    if (!extracted.location) {
-      const loc = fuzzyMatch(text, LOCATION_KEYWORDS);
-      if (loc) {
-        extracted.location = loc;
+      if (vision.location) {
+        extracted.location = vision.location;
         extracted.confidence.location = 0.8;
       }
     }
     
-    if (!extracted.item) {
-      const item = fuzzyMatch(text, ITEM_KEYWORDS);
-      if (item) {
-        extracted.item = item;
-        extracted.confidence.item = 0.75;
+    // Clean OCR text
+    const cleanedText = cleanOcrText(text);
+    
+    // OCR text extraction - quantity
+    const qtyMatch = cleanedText.match(/\b(\d{1,3})\s*[xX×]?\s*(pcs?|pieces?|items?|boxes?|units?)?\b/i);
+    if (qtyMatch && !extracted.quantity) {
+      extracted.quantity = qtyMatch[1];
+      extracted.confidence.quantity = 0.9;
+    }
+    
+    // Location extraction
+    if (!extracted.location) {
+      // Try to find location phrase (e.g., "Master bedroom")
+      for (const loc of LOCATION_KEYWORDS) {
+        const regex = new RegExp('(?:from\\s+)?(?:the\\s+)?([a-z]+\\s+)?' + escapeRegex(loc) + '(?:\\s+[a-z]+)?', 'i');
+        const match = cleanedText.match(regex);
+        if (match) {
+          extracted.location = match[0].replace(/^(from|the)\s+/i, '').trim();
+          extracted.confidence.location = 0.8;
+          break;
+        }
       }
     }
     
-    if (!extracted.description) {
-      extracted.description = buildSmartDescription(text, extracted);
+    // Item extraction
+    if (!extracted.item) {
+      for (const item of ITEM_KEYWORDS) {
+        const regex = new RegExp('(?:[a-z]+\\s+)?' + escapeRegex(item) + '(?:\\s+[a-z]+)?', 'i');
+        const match = cleanedText.match(regex);
+        if (match) {
+          extracted.item = match[0].trim();
+          extracted.confidence.item = 0.75;
+          break;
+        }
+      }
+    }
+    
+    // Build description from remaining text
+    if (!extracted.description && cleanedText) {
+      extracted.description = buildSmartDescription(cleanedText, extracted);
       extracted.confidence.description = 0.6;
     }
     
@@ -465,6 +596,7 @@
   function buildSmartDescription(text, extracted) {
     let desc = text;
     
+    // Remove already extracted data
     if (extracted.item) {
       const itemRegex = new RegExp('\\b' + escapeRegex(extracted.item) + '\\b', 'gi');
       desc = desc.replace(itemRegex, '');
@@ -476,10 +608,11 @@
     }
     
     if (extracted.quantity) {
-      const qtyRegex = new RegExp('\\b' + extracted.quantity + '\\s*[xX×]?\\s*(pcs?|pieces?)?\\b', 'gi');
+      const qtyRegex = new RegExp('\\b' + extracted.quantity + '\\s*[xX×]?\\s*(pcs?|pieces?|items?)?\\b', 'gi');
       desc = desc.replace(qtyRegex, '');
     }
     
+    // Clean up
     desc = desc
       .replace(/\n+/g, ' ')
       .replace(/\s+/g, ' ')
@@ -487,20 +620,24 @@
       .replace(/[,;:\-\s]+$/, '')
       .trim();
     
-    return desc || text;
-  }
-
-  function escapeRegex(str) {
-    return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // Don't return empty or very short descriptions
+    return desc.length > 2 ? desc : null;
   }
 
   // ========== MAPPING WITH MULTI-PASS ==========
 
   function buildMappingsWithMultiPass(text, vision, voice) {
+    if (!state.activeForm) {
+      collectForms();
+    }
+    if (!state.activeForm) return [];
+    
     const extracted = extractStructuredData(text, vision, voice);
     const fields = getCandidateFields(state.activeForm);
     
-    // Pass 1: Type hints
+    if (fields.length === 0) return [];
+    
+    // Pass 1: Type hints (highest priority)
     const pass1 = matchByTypeHints(fields, extracted);
     
     // Pass 2: Semantic labels
@@ -510,6 +647,7 @@
     const allMappings = [...pass1, ...pass2];
     const uniqueMappings = deduplicateMappings(allMappings);
     
+    // Sort by confidence
     uniqueMappings.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
     
     return uniqueMappings;
@@ -577,7 +715,7 @@
     const seen = new Map();
     
     for (const mapping of mappings) {
-      const key = (mapping.el.name || mapping.el.id) + '_' + mapping.value;
+      const key = (mapping.el.name || mapping.el.id || '') + '_' + mapping.typeHint;
       const existing = seen.get(key);
       
       if (!existing || (mapping.confidence || 0) > (existing.confidence || 0)) {
@@ -588,12 +726,687 @@
     return Array.from(seen.values());
   }
 
+  // ========== APPLYING MAPPINGS ==========
+
+  function setFieldValue(el, value) {
+    if (!el || value === null || value === undefined) return false;
+    
+    const tagName = el.tagName.toLowerCase();
+    const type = el.type ? el.type.toLowerCase() : '';
+    
+    // Store original value for undo
+    if (!state.originalValues.has(el)) {
+      state.originalValues.set(el, el.value || '');
+    }
+    
+    try {
+      if (tagName === 'select') {
+        return setSelectValue(el, value);
+      } else if (type === 'radio') {
+        return setRadioValue(el, value);
+      } else if (type === 'checkbox') {
+        return setCheckboxValue(el, value);
+      } else {
+        return setInputValue(el, value);
+      }
+    } catch (e) {
+      console.warn('Error setting field value:', e);
+      return false;
+    }
+  }
+
+  function setInputValue(el, value) {
+    // Use native setter for React compatibility
+    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, 'value'
+    )?.set;
+    const nativeTextareaValueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype, 'value'
+    )?.set;
+    
+    const setter = el.tagName.toLowerCase() === 'textarea' 
+      ? nativeTextareaValueSetter 
+      : nativeInputValueSetter;
+    
+    if (setter) {
+      setter.call(el, value);
+    } else {
+      el.value = value;
+    }
+    
+    // Dispatch events for framework compatibility
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    
+    return true;
+  }
+
+  function setSelectValue(el, value) {
+    const options = Array.from(el.options);
+    const valueLower = String(value).toLowerCase();
+    
+    // Try exact match first
+    let matched = options.find(opt => 
+      opt.value.toLowerCase() === valueLower || 
+      opt.text.toLowerCase() === valueLower
+    );
+    
+    // Try partial match
+    if (!matched) {
+      matched = options.find(opt => 
+        opt.value.toLowerCase().includes(valueLower) || 
+        opt.text.toLowerCase().includes(valueLower) ||
+        valueLower.includes(opt.value.toLowerCase()) ||
+        valueLower.includes(opt.text.toLowerCase())
+      );
+    }
+    
+    // Try fuzzy match
+    if (!matched) {
+      let bestScore = Infinity;
+      for (const opt of options) {
+        if (!opt.value) continue;
+        const scoreValue = levenshtein(opt.value.toLowerCase(), valueLower);
+        const scoreText = levenshtein(opt.text.toLowerCase(), valueLower);
+        const score = Math.min(scoreValue, scoreText);
+        if (score < bestScore && score <= 3) {
+          bestScore = score;
+          matched = opt;
+        }
+      }
+    }
+    
+    if (matched) {
+      el.value = matched.value;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+    
+    return false;
+  }
+
+  function setRadioValue(el, value) {
+    const name = el.name;
+    if (!name) return false;
+    
+    const radios = document.querySelectorAll(`input[type="radio"][name="${name}"]`);
+    const valueLower = String(value).toLowerCase();
+    
+    for (const radio of radios) {
+      const radioValue = radio.value.toLowerCase();
+      const radioLabel = radio.parentElement?.textContent?.toLowerCase() || '';
+      
+      if (radioValue === valueLower || 
+          radioLabel.includes(valueLower) ||
+          valueLower.includes(radioValue)) {
+        radio.checked = true;
+        radio.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
+  function setCheckboxValue(el, value) {
+    const valueLower = String(value).toLowerCase();
+    const isTrue = ['true', 'yes', '1', 'on', 'checked'].includes(valueLower);
+    el.checked = isTrue;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+
+  function applyMappings(mappings) {
+    if (!mappings || mappings.length === 0) return 0;
+    
+    let applied = 0;
+    const checkedMappings = mappings.filter(m => m.checked);
+    
+    for (const mapping of checkedMappings) {
+      const success = setFieldValue(mapping.el, mapping.value);
+      if (success) {
+        applied++;
+        
+        // Learn from successful mapping
+        state.fieldClassifier.learn(
+          mapping.label,
+          mapping.typeHint,
+          mapping.value
+        );
+      }
+    }
+    
+    state.lastApplied = checkedMappings;
+    return applied;
+  }
+
+  function undoMappings() {
+    if (!state.originalValues || state.originalValues.size === 0) return 0;
+    
+    let undone = 0;
+    for (const [el, originalValue] of state.originalValues) {
+      setFieldValue(el, originalValue);
+      undone++;
+    }
+    
+    state.originalValues.clear();
+    return undone;
+  }
+
+  // ========== API CALLS ==========
+
+  async function performOcr(imageData) {
+    const apiBase = detectApiBase();
+    
+    try {
+      const response = await fetch(`${apiBase}/api/ocr`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: imageData })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`OCR API error: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      return data.text || data.result || '';
+    } catch (error) {
+      console.error('OCR Error:', error);
+      throw error;
+    }
+  }
+
+  async function performVisionAnalysis(imageData) {
+    const apiBase = detectApiBase();
+    
+    try {
+      const response = await fetch(`${apiBase}/api/vision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: imageData })
+      });
+      
+      if (!response.ok) {
+        return null; // Vision is optional
+      }
+      
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.warn('Vision API error (non-critical):', error);
+      return null;
+    }
+  }
+
+  async function processImage(file) {
+    state.isProcessing = true;
+    updateFabState();
+    
+    const loadingToast = showToast('Processing image...', 'loading', 0);
+    
+    try {
+      // Compress image
+      showToast('Compressing...', 'info', 1000);
+      const compressedImage = await compressImage(file);
+      
+      // Run OCR and Vision in parallel
+      showToast('Reading text...', 'info', 1500);
+      const [ocrText, visionData] = await Promise.all([
+        performOcr(compressedImage),
+        performVisionAnalysis(compressedImage).catch(() => null)
+      ]);
+      
+      hideToast(loadingToast);
+      
+      if (!ocrText && !visionData) {
+        showToast('Could not read image. Try again.', 'error');
+        return;
+      }
+      
+      state.lastText = ocrText || '';
+      state.lastOriginalText = ocrText || '';
+      state.lastVision = visionData;
+      state.voiceData = null;
+      
+      // Build mappings
+      const mappings = buildMappingsWithMultiPass(ocrText, visionData, null);
+      state.mappings = mappings;
+      
+      if (mappings.length > 0) {
+        showToast(`Found ${mappings.length} matches!`, 'success');
+        openPanel();
+        renderMappings();
+      } else {
+        showToast('No fields matched. Try clearer image.', 'info');
+      }
+      
+    } catch (error) {
+      hideToast(loadingToast);
+      console.error('Image processing error:', error);
+      showToast('Processing failed. Try again.', 'error');
+    } finally {
+      state.isProcessing = false;
+      updateFabState();
+    }
+  }
+
+  // ========== VOICE INPUT ==========
+
+  function initSpeechRecognition() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      console.warn('Speech recognition not supported');
+      return null;
+    }
+    
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+    
+    return recognition;
+  }
+
+  function startVoiceInput() {
+    if (state.isListening) {
+      stopVoiceInput();
+      return;
+    }
+    
+    if (!state.speechRecognition) {
+      state.speechRecognition = initSpeechRecognition();
+    }
+    
+    if (!state.speechRecognition) {
+      showToast('Voice input not supported', 'error');
+      return;
+    }
+    
+    state.isListening = true;
+    updateFabState();
+    showToast('Listening... Speak now', 'info', 0);
+    
+    let finalTranscript = '';
+    
+    state.speechRecognition.onresult = (event) => {
+      let interimTranscript = '';
+      
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += transcript + ' ';
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+      
+      // Show interim results
+      if (interimTranscript) {
+        showToast(`Heard: "${interimTranscript}"`, 'info', 1000);
+      }
+    };
+    
+    state.speechRecognition.onend = () => {
+      state.isListening = false;
+      updateFabState();
+      
+      if (finalTranscript.trim()) {
+        processVoiceInput(finalTranscript.trim());
+      } else {
+        showToast('No speech detected. Try again.', 'info');
+      }
+    };
+    
+    state.speechRecognition.onerror = (event) => {
+      state.isListening = false;
+      updateFabState();
+      console.error('Speech recognition error:', event.error);
+      showToast('Voice input failed. Try again.', 'error');
+    };
+    
+    state.speechRecognition.start();
+  }
+
+  function stopVoiceInput() {
+    if (state.speechRecognition && state.isListening) {
+      state.speechRecognition.stop();
+    }
+    state.isListening = false;
+    updateFabState();
+  }
+
+  function processVoiceInput(transcript) {
+    showToast(`Processing: "${transcript}"`, 'info', 2000);
+    
+    // Parse voice input into structured data
+    const voiceData = parseVoiceTranscript(transcript);
+    state.voiceData = voiceData;
+    state.lastText = transcript;
+    
+    // Build mappings
+    const mappings = buildMappingsWithMultiPass(transcript, null, voiceData);
+    state.mappings = mappings;
+    
+    if (mappings.length > 0) {
+      showToast(`Found ${mappings.length} matches!`, 'success');
+      openPanel();
+      renderMappings();
+    } else {
+      showToast('Could not parse voice input.', 'info');
+    }
+  }
+
+  function parseVoiceTranscript(transcript) {
+    const data = {
+      item: null,
+      location: null,
+      description: null,
+      quantity: null,
+      notes: null
+    };
+    
+    // Split by common delimiters
+    const parts = transcript.split(/[,;]+/).map(p => p.trim()).filter(Boolean);
+    
+    // Try to identify each part
+    for (const part of parts) {
+      const partLower = part.toLowerCase();
+      
+      // Check for quantity
+      const qtyMatch = partLower.match(/^(\d+)\s*(pieces?|items?|boxes?|units?)?$/i);
+      if (qtyMatch && !data.quantity) {
+        data.quantity = qtyMatch[1];
+        continue;
+      }
+      
+      // Check for location
+      if (!data.location) {
+        const locMatch = fuzzyMatch(partLower, LOCATION_KEYWORDS);
+        if (locMatch) {
+          data.location = part;
+          continue;
+        }
+      }
+      
+      // Check for item
+      if (!data.item) {
+        const itemMatch = fuzzyMatch(partLower, ITEM_KEYWORDS);
+        if (itemMatch) {
+          data.item = part;
+          continue;
+        }
+      }
+      
+      // Default to description/notes
+      if (!data.description) {
+        data.description = part;
+      } else if (!data.notes) {
+        data.notes = part;
+      }
+    }
+    
+    // If nothing matched, use whole transcript as description
+    if (!data.item && !data.location && !data.description) {
+      data.description = transcript;
+    }
+    
+    return data;
+  }
+
+  // ========== UI COMPONENTS ==========
+
+  function updateFabVisibility() {
+    const fab = document.getElementById(FAB_ID);
+    if (!fab) return;
+    
+    const hasForm = state.forms.length > 0;
+    
+    if (hasForm && state.fabVisible) {
+      fab.classList.remove('ac-fab-hidden');
+    } else if (!hasForm) {
+      fab.classList.add('ac-fab-hidden');
+    }
+  }
+
+  function updateFabState() {
+    const fab = document.getElementById(FAB_ID);
+    if (!fab) return;
+    
+    fab.classList.remove('ac-scanning', 'ac-listening');
+    
+    if (state.isProcessing) {
+      fab.classList.add('ac-scanning');
+    } else if (state.isListening) {
+      fab.classList.add('ac-listening');
+    }
+  }
+
+  function createFab() {
+    if (document.getElementById(FAB_ID)) return;
+    
+    const fab = document.createElement('button');
+    fab.id = FAB_ID;
+    fab.type = 'button';
+    fab.setAttribute('aria-label', 'OCR Scanner');
+    fab.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="currentColor">
+        <path d="M9.4 10.5l4.77-8.26C13.47 2.09 12.75 2 12 2c-2.4 0-4.6.85-6.32 2.25l3.66 6.35.06-.1zM21.54 9c-.92-2.92-3.15-5.26-6-6.34L11.88 9h9.66zm.26 1h-7.49l.29.5 4.76 8.25C21 16.97 22 14.61 22 12c0-.69-.07-1.35-.2-2zM8.54 12l-3.9-6.75C3.01 7.03 2 9.39 2 12c0 .69.07 1.35.2 2h7.49l-1.15-2zm-6.08 3c.92 2.92 3.15 5.26 6 6.34L12.12 15H2.46zm11.27 0l-3.9 6.76c.7.15 1.42.24 2.17.24 2.4 0 4.6-.85 6.32-2.25l-3.66-6.35-.93 1.6z"/>
+      </svg>
+    `;
+    
+    fab.addEventListener('click', handleFabClick);
+    
+    document.body.appendChild(fab);
+    
+    // Smart auto-hide on scroll
+    let lastScrollY = window.scrollY;
+    let ticking = false;
+    
+    window.addEventListener('scroll', () => {
+      if (!ticking) {
+        window.requestAnimationFrame(() => {
+          const currentScrollY = window.scrollY;
+          const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+          
+          // Always show near bottom
+          if (currentScrollY >= maxScroll - 100) {
+            state.fabVisible = true;
+          } else if (currentScrollY > lastScrollY && currentScrollY > 100) {
+            // Scrolling down - hide
+            state.fabVisible = false;
+          } else {
+            // Scrolling up - show
+            state.fabVisible = true;
+          }
+          
+          updateFabVisibility();
+          lastScrollY = currentScrollY;
+          ticking = false;
+        });
+        ticking = true;
+      }
+    });
+  }
+
+  function handleFabClick() {
+    if (state.isProcessing) return;
+    
+    if (state.isPanelOpen) {
+      closePanel();
+    } else {
+      openFileInput();
+    }
+  }
+
+  function openFileInput() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.capture = 'environment'; // Use rear camera on mobile
+    
+    input.onchange = async (e) => {
+      const file = e.target.files?.[0];
+      if (file) {
+        state.selectedFile = file;
+        await processImage(file);
+      }
+    };
+    
+    input.click();
+  }
+
+  function createPanel() {
+    if (document.getElementById(PANEL_ID)) return;
+    
+    const panel = document.createElement('div');
+    panel.id = PANEL_ID;
+    panel.innerHTML = `
+      <div class="ac-header">
+        <div class="ac-title">
+          <div class="ac-title-main">OCR Results</div>
+          <div class="ac-title-sub">Review and apply matches</div>
+        </div>
+        <button class="ac-close" type="button" aria-label="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+          </svg>
+        </button>
+      </div>
+      <div class="ac-body">
+        <div class="ac-mappings"></div>
+        <div class="ac-empty" style="display:none;">
+          <p>No matches found. Try a clearer image or use voice input.</p>
+        </div>
+      </div>
+      <div class="ac-footer">
+        <button class="ac-btn ac-btn-ghost ac-btn-voice" type="button">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right:6px;">
+            <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+          </svg>
+          Voice
+        </button>
+        <button class="ac-btn ac-btn-ghost ac-btn-undo" type="button" disabled>Undo</button>
+        <button class="ac-btn ac-btn-primary ac-btn-apply" type="button">Apply</button>
+      </div>
+    `;
+    
+    // Event listeners
+    panel.querySelector('.ac-close').addEventListener('click', closePanel);
+    panel.querySelector('.ac-btn-apply').addEventListener('click', handleApply);
+    panel.querySelector('.ac-btn-undo').addEventListener('click', handleUndo);
+    panel.querySelector('.ac-btn-voice').addEventListener('click', startVoiceInput);
+    
+    document.body.appendChild(panel);
+  }
+
+  function openPanel() {
+    const panel = document.getElementById(PANEL_ID);
+    if (panel) {
+      panel.classList.add('ac-open');
+      state.isPanelOpen = true;
+    }
+  }
+
+  function closePanel() {
+    const panel = document.getElementById(PANEL_ID);
+    if (panel) {
+      panel.classList.remove('ac-open');
+      state.isPanelOpen = false;
+    }
+  }
+
+  function renderMappings() {
+    const panel = document.getElementById(PANEL_ID);
+    if (!panel) return;
+    
+    const container = panel.querySelector('.ac-mappings');
+    const emptyState = panel.querySelector('.ac-empty');
+    
+    if (!state.mappings || state.mappings.length === 0) {
+      container.innerHTML = '';
+      container.style.display = 'none';
+      emptyState.style.display = 'block';
+      return;
+    }
+    
+    container.style.display = 'flex';
+    emptyState.style.display = 'none';
+    
+    container.innerHTML = state.mappings.map((mapping, index) => {
+      const confidence = Math.round((mapping.confidence || 0) * 100);
+      const confidenceColor = confidence >= 90 ? '#22c55e' : confidence >= 80 ? '#eab308' : '#f97316';
+      
+      return `
+        <div class="ac-map-row" data-index="${index}">
+          <input type="checkbox" class="ac-map-check" ${mapping.checked ? 'checked' : ''} data-index="${index}">
+          <div class="ac-map-main">
+            <div class="ac-map-header">
+              <span class="ac-map-label">${escapeHtml(mapping.label)}</span>
+              <span class="ac-map-confidence">
+                <span class="ac-confidence-dot" style="background:${confidenceColor}"></span>
+                ${confidence}%
+              </span>
+            </div>
+            <div class="ac-map-value">${escapeHtml(String(mapping.value))}</div>
+          </div>
+        </div>
+      `;
+    }).join('');
+    
+    // Add checkbox listeners
+    container.querySelectorAll('.ac-map-check').forEach(checkbox => {
+      checkbox.addEventListener('change', (e) => {
+        const index = parseInt(e.target.dataset.index);
+        if (state.mappings[index]) {
+          state.mappings[index].checked = e.target.checked;
+        }
+      });
+    });
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  function handleApply() {
+    const applied = applyMappings(state.mappings);
+    
+    if (applied > 0) {
+      showToast(`Applied ${applied} field(s)`, 'success');
+      
+      // Enable undo button
+      const undoBtn = document.querySelector('.ac-btn-undo');
+      if (undoBtn) undoBtn.disabled = false;
+      
+      closePanel();
+    } else {
+      showToast('No fields to apply', 'info');
+    }
+  }
+
+  function handleUndo() {
+    const undone = undoMappings();
+    
+    if (undone > 0) {
+      showToast(`Undone ${undone} field(s)`, 'success');
+      
+      // Disable undo button
+      const undoBtn = document.querySelector('.ac-btn-undo');
+      if (undoBtn) undoBtn.disabled = true;
+    }
+  }
+
   // ========== STYLES ==========
 
   function injectStyles() {
     if (document.getElementById(PANEL_ID + "-styles")) return;
     
-    const css = `
+    const style = document.createElement('style');
+    style.id = PANEL_ID + "-styles";
+    style.textContent = `
 /* FAB Styles */
 #${FAB_ID} {
   position: fixed;
@@ -638,16 +1451,16 @@
 
 #${FAB_ID}.ac-scanning {
   background: #6366f1;
-  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  animation: ac-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
 #${FAB_ID}.ac-listening {
   background: #ec4899;
-  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  animation: ac-pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
-@keyframes pulse {
-  0%, 100% { box-shadow: 0 0 0 0 currentColor; }
+@keyframes ac-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.4); }
   50% { box-shadow: 0 0 0 20px transparent; }
 }
 
@@ -658,6 +1471,7 @@
   bottom: 90px;
   width: 380px;
   max-width: calc(100vw - 40px);
+  max-height: calc(100vh - 120px);
   background: white;
   border-radius: 16px;
   box-shadow: 0 20px 60px rgba(0,0,0,0.3);
@@ -668,6 +1482,8 @@
   pointer-events: none;
   transform: translateY(10px) scale(0.95);
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
 }
 
 #${PANEL_ID}.ac-open {
@@ -682,6 +1498,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-shrink: 0;
 }
 
 #${PANEL_ID} .ac-title {
@@ -719,8 +1536,9 @@
 
 #${PANEL_ID} .ac-body {
   padding: 20px;
-  max-height: 400px;
   overflow-y: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 #${PANEL_ID} .ac-mappings {
@@ -750,6 +1568,7 @@
   margin-top: 2px;
   accent-color: #6366f1;
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 #${PANEL_ID} .ac-map-main {
@@ -762,6 +1581,7 @@
   justify-content: space-between;
   align-items: center;
   margin-bottom: 6px;
+  gap: 8px;
 }
 
 #${PANEL_ID} .ac-map-label {
@@ -769,6 +1589,9 @@
   font-weight: 600;
   color: #1e293b;
   text-transform: capitalize;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 #${PANEL_ID} .ac-map-confidence {
@@ -777,6 +1600,8 @@
   gap: 4px;
   font-size: 11px;
   font-weight: 500;
+  color: #64748b;
+  flex-shrink: 0;
 }
 
 #${PANEL_ID} .ac-confidence-dot {
@@ -791,13 +1616,20 @@
   word-break: break-word;
 }
 
+#${PANEL_ID} .ac-empty {
+  text-align: center;
+  padding: 30px 20px;
+  color: #64748b;
+}
+
 #${PANEL_ID} .ac-footer {
   padding: 16px 20px;
   background: #f8fafc;
   border-top: 1px solid #e2e8f0;
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
+  flex-shrink: 0;
 }
 
 #${PANEL_ID} .ac-btn {
@@ -808,15 +1640,22 @@
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#${PANEL_ID} .ac-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 #${PANEL_ID} .ac-btn-primary {
   background: #6366f1;
   color: white;
-  flex: 1;
 }
 
-#${PANEL_ID} .ac-btn-primary:hover {
+#${PANEL_ID} .ac-btn-primary:hover:not(:disabled) {
   background: #4f46e5;
   transform: translateY(-1px);
 }
@@ -826,7 +1665,7 @@
   color: #64748b;
 }
 
-#${PANEL_ID} .ac-btn-ghost:hover {
+#${PANEL_ID} .ac-btn-ghost:hover:not(:disabled) {
   background: #e2e8f0;
 }
 
@@ -842,9 +1681,10 @@
   min-width: 250px;
   max-width: 350px;
   opacity: 0;
-  transform: translateX(400px);
+  transform: translateX(100px);
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   pointer-events: auto;
+  font-family: system-ui, -apple-system, sans-serif;
 }
 
 .ac-toast-show {
@@ -869,4 +1709,139 @@
   font-weight: 500;
 }
 
-.ac-toast
+.ac-toast-success .ac-toast-icon { color: #22c55e; }
+.ac-toast-error .ac-toast-icon { color: #ef4444; }
+.ac-toast-info .ac-toast-icon { color: #3b82f6; }
+.ac-toast-loading .ac-toast-icon { color: #6366f1; }
+
+.ac-spinner-sm {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #e2e8f0;
+  border-top-color: #6366f1;
+  border-radius: 50%;
+  animation: ac-spin 0.8s linear infinite;
+}
+
+@keyframes ac-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Mobile Responsive */
+@media (max-width: 480px) {
+  #${FAB_ID} {
+    right: 16px;
+    bottom: 16px;
+    width: 52px;
+    height: 52px;
+  }
+  
+  #${PANEL_ID} {
+    right: 10px;
+    left: 10px;
+    bottom: 80px;
+    width: auto;
+    max-width: none;
+  }
+  
+  #${TOAST_CONTAINER_ID} {
+    right: 10px;
+    left: 10px;
+  }
+  
+  .ac-toast {
+    min-width: auto;
+    max-width: none;
+  }
+}
+    `;
+    
+    document.head.appendChild(style);
+  }
+
+  // ========== KEYBOARD SHORTCUTS ==========
+
+  function initKeyboardShortcuts() {
+    document.addEventListener('keydown', (e) => {
+      // Ctrl+Shift+S - Quick scan
+      if (e.ctrlKey && e.shiftKey && e.key === 'S') {
+        e.preventDefault();
+        if (!state.isProcessing && state.forms.length > 0) {
+          openFileInput();
+        }
+      }
+      
+      // Ctrl+Shift+V - Voice input
+      if (e.ctrlKey && e.shiftKey && e.key === 'V') {
+        e.preventDefault();
+        if (state.forms.length > 0) {
+          startVoiceInput();
+        }
+      }
+      
+      // Escape - Close panel
+      if (e.key === 'Escape') {
+        if (state.isPanelOpen) {
+          closePanel();
+        }
+        if (state.isListening) {
+          stopVoiceInput();
+        }
+      }
+    });
+  }
+
+  // ========== MUTATION OBSERVER ==========
+
+  function initObserver() {
+    if (state.observer) return;
+    
+    state.observer = new MutationObserver(() => {
+      collectForms();
+    });
+    
+    state.observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+  }
+
+  // ========== INITIALIZATION ==========
+
+  function init() {
+    // Load ML training data
+    state.fieldClassifier.load();
+    
+    // Inject styles
+    injectStyles();
+    
+    // Create UI
+    createFab();
+    createPanel();
+    
+    // Collect forms
+    collectForms();
+    
+    // Init observers and shortcuts
+    initObserver();
+    initKeyboardShortcuts();
+    
+    // Initial visibility check
+    updateFabVisibility();
+    
+    console.log('AppyCrew OCR Widget v10 initialized');
+  }
+
+  // Start when DOM is ready
+  ready(init);
+  
+  // Expose for external control if needed
+  window.AppyCrewOCR = {
+    scan: openFileInput,
+    voice: startVoiceInput,
+    open: openPanel,
+    close: closePanel,
+    getState: () => ({ ...state })
+  };
+
+})();
