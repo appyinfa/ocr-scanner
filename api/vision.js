@@ -31,28 +31,19 @@ export const config = {
   },
 };
 
-// System prompt for extracting inventory data
-const EXTRACTION_PROMPT = `You are an expert at analyzing images of furniture, household items, and moving inventory. 
+// System prompt for extracting inventory data - CONCISE VERSION
+const EXTRACTION_PROMPT = `You analyze images of furniture and household items for a moving inventory system.
 
-Analyze this image and extract the following information:
-- item: The main item name (e.g., "Oak Wardrobe", "Blue Sofa", "Dining Table")
-- description: Physical description including color, material, size, condition
-- location: If visible or can be inferred, where the item might be located (e.g., "bedroom", "living room")
-- quantity: Number of items if multiple are visible (default to 1)
-- condition: Any visible damage, wear, or notable condition details
-- notes: Any other relevant observations
+Extract ONLY these fields in JSON format:
+- item: Item name, 2-4 words max (e.g., "Oak Wardrobe", "Blue Leather Sofa")
+- description: Brief condition/details, MAX 8 WORDS (e.g., "good condition, minor scratches")
+- location: Room if visible (e.g., "bedroom", "living room") or null
+- quantity: Number of items visible (default 1)
 
-Respond ONLY with valid JSON in this exact format:
-{
-  "item": "string or null",
-  "description": "string or null", 
-  "location": "string or null",
-  "quantity": number or null,
-  "condition": "string or null",
-  "notes": "string or null"
-}
+IMPORTANT: Keep descriptions extremely brief. No full sentences. Just key details.
 
-If you cannot identify something, use null for that field. Be concise but accurate.`;
+Respond ONLY with valid JSON:
+{"item":"string","description":"string or null","location":"string or null","quantity":number}`;
 
 export default async function handler(req, res) {
   // Handle CORS preflight
@@ -272,12 +263,18 @@ function parseJsonResponse(content) {
   try {
     const parsed = JSON.parse(jsonStr);
     
+    // Truncate description if too long (max 50 chars)
+    let description = parsed.description || null;
+    if (description && description.length > 50) {
+      description = description.substring(0, 50).replace(/\s+\S*$/, '').trim();
+    }
+    
     // Ensure all expected fields exist
     return {
       item: parsed.item || null,
-      description: parsed.description || null,
+      description: description,
       location: parsed.location || null,
-      quantity: parsed.quantity || null,
+      quantity: parsed.quantity || 1,
       condition: parsed.condition || null,
       notes: parsed.notes || null
     };
