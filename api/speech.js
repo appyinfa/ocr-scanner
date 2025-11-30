@@ -159,24 +159,20 @@ async function callGoogleSpeechToText(base64Audio, encoding, languageCode) {
       sampleRateHertz: encoding === 'WEBM_OPUS' ? 48000 : 16000,
       languageCode: languageCode,
       enableAutomaticPunctuation: true,
-      model: 'latest_short', // Optimized for short utterances
-      useEnhanced: true,
-      // Alternative languages for better recognition
-      alternativeLanguageCodes: languageCode === 'en-US' ? ['en-GB', 'en-AU'] : [],
+      model: 'command_and_search', // Optimized for short commands - cheaper & faster
       // Speech context for inventory-related words
       speechContexts: [{
         phrases: [
           // Items
           'wardrobe', 'sofa', 'couch', 'table', 'chair', 'desk', 'bed', 'mattress',
           'dresser', 'cabinet', 'bookcase', 'shelf', 'lamp', 'mirror', 'box', 'carton',
-          // Locations
+          // Locations  
           'bedroom', 'living room', 'kitchen', 'bathroom', 'garage', 'attic', 'basement',
           'dining room', 'office', 'study', 'hallway', 'master bedroom', 'guest room',
           // Descriptors
-          'wooden', 'metal', 'glass', 'leather', 'fabric', 'antique', 'modern',
-          'large', 'small', 'heavy', 'fragile', 'scratched', 'damaged', 'good condition'
+          'wooden', 'metal', 'glass', 'leather', 'fabric', 'large', 'small', 'heavy'
         ],
-        boost: 10
+        boost: 15
       }]
     },
     audio: {
