@@ -38,6 +38,7 @@
     isListening: false,
     mediaRecorder: null,
     audioStream: null,
+    audioContext: null,
     recordingTimeout: null,
     isPanelOpen: false,
     isProcessing: false,
@@ -182,8 +183,8 @@
     return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
-  // Image compression
-  async function compressImage(file, maxWidth = 1200, quality = 0.85) {
+  // Image compression - aggressive for speed
+  async function compressImage(file, maxWidth = 800, quality = 0.7) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onerror = () => reject(new Error('Failed to read file'));
@@ -195,16 +196,33 @@
           let width = img.width;
           let height = img.height;
           
+          // More aggressive resize for speed
           if (width > maxWidth) {
             height *= maxWidth / width;
             width = maxWidth;
           }
           
+          // Also limit height
+          const maxHeight = 800;
+          if (height > maxHeight) {
+            width *= maxHeight / height;
+            height = maxHeight;
+          }
+          
           canvas.width = width;
           canvas.height = height;
           const ctx = canvas.getContext('2d');
+          
+          // Use faster image smoothing
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'medium';
+          
           ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', quality));
+          
+          // Use lower quality JPEG for speed
+          const result = canvas.toDataURL('image/jpeg', quality);
+          console.log('[AppyCrew OCR] Compressed:', file.size, '→', Math.round(result.length * 0.75), 'bytes');
+          resolve(result);
         };
         img.src = e.target.result;
       };
@@ -495,18 +513,47 @@
   ];
 
   const BRAND_NOISE = [
-    "appycrew", "fragile", "handle with care", "this side up", 
-    "heavy", "do not stack", "keep dry"
+    // Company/App names
+    "appycrew", "appy crew", "moveit", "uhaul", "u-haul", "pods", "two men and a truck",
+    // Tape warnings
+    "fragile", "handle with care", "this side up", "this way up", "keep upright",
+    "heavy", "do not stack", "keep dry", "keep away from heat", "do not drop",
+    "glass", "caution", "warning", "attention", "danger",
+    // Box labels
+    "packed by", "room:", "contents:", "destination:",
+    // QR/Barcode text
+    "scan me", "qr code", "barcode", "tracking",
+    // Common tape patterns
+    "packing tape", "sealing tape", "moving tape", "box tape"
+  ];
+
+  // Regex patterns for branded tape text and noise
+  const NOISE_PATTERNS = [
+    /\b\d{10,}\b/g,  // Long numbers (barcodes)
+    /\b[A-Z]{2,3}-\d{4,}\b/g,  // Tracking codes like AB-12345
+    /www\.[^\s]+/gi,  // URLs
+    /https?:\/\/[^\s]+/gi,  // URLs with protocol
+    /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,  // Emails
+    /\(\d{3}\)\s*\d{3}[-.]?\d{4}/g,  // Phone numbers
+    /\d{3}[-.]?\d{3}[-.]?\d{4}/g,  // Phone numbers alt format
+    /©.*?\d{4}/gi,  // Copyright notices
+    /[™®©]/g,  // Trademark symbols
+    /\b[A-Z]{10,}\b/g,  // Long uppercase strings (likely logos)
   ];
 
   function cleanOcrText(text) {
     if (!text) return "";
     let cleaned = text;
     
-    // Remove brand noise
+    // Remove noise patterns (regex)
+    for (const pattern of NOISE_PATTERNS) {
+      cleaned = cleaned.replace(pattern, ' ');
+    }
+    
+    // Remove brand noise words
     for (const noise of BRAND_NOISE) {
       const regex = new RegExp('\\b' + escapeRegex(noise) + '\\b', 'gi');
-      cleaned = cleaned.replace(regex, '');
+      cleaned = cleaned.replace(regex, ' ');
     }
     
     // Clean up whitespace
@@ -615,34 +662,51 @@
   }
 
   function buildSmartDescription(text, extracted) {
+    if (!text) return null;
     let desc = text;
     
-    // Remove already extracted data
+    // Remove the item name and all its component words
     if (extracted.item) {
+      // Remove exact phrase first
       const itemRegex = new RegExp('\\b' + escapeRegex(extracted.item) + '\\b', 'gi');
-      desc = desc.replace(itemRegex, '');
+      desc = desc.replace(itemRegex, ' ');
+      
+      // Also remove individual words from item name (skip small common words)
+      const itemWords = extracted.item.toLowerCase().split(/\s+/);
+      const skipWords = ['a', 'an', 'the', 'of', 'and', 'or', 'with', 'in', 'on', 'for', 'to'];
+      for (const word of itemWords) {
+        if (word.length > 2 && !skipWords.includes(word)) {
+          const wordRegex = new RegExp('\\b' + escapeRegex(word) + 's?\\b', 'gi');
+          desc = desc.replace(wordRegex, ' ');
+        }
+      }
     }
     
+    // Remove location
     if (extracted.location) {
       const locRegex = new RegExp('\\b' + escapeRegex(extracted.location) + '\\b', 'gi');
-      desc = desc.replace(locRegex, '');
+      desc = desc.replace(locRegex, ' ');
     }
     
+    // Remove quantity patterns
     if (extracted.quantity) {
-      const qtyRegex = new RegExp('\\b' + extracted.quantity + '\\s*[xX×]?\\s*(pcs?|pieces?|items?)?\\b', 'gi');
-      desc = desc.replace(qtyRegex, '');
+      const qtyRegex = new RegExp('\\b' + extracted.quantity + '\\s*[xX×]?\\s*(pcs?|pieces?|items?|units?)?\\b', 'gi');
+      desc = desc.replace(qtyRegex, ' ');
     }
     
     // Clean up
     desc = desc
-      .replace(/\n+/g, ' ')
       .replace(/\s+/g, ' ')
-      .replace(/^[,;:\-\s]+/, '')
-      .replace(/[,;:\-\s]+$/, '')
+      .replace(/^[\s,;:\-\.]+/, '')
+      .replace(/[\s,;:\-\.]+$/, '')
       .trim();
     
-    // Don't return empty or very short descriptions
-    return desc.length > 2 ? desc : null;
+    // Don't return empty, very short, or number-only descriptions
+    if (desc.length < 3 || /^[\d\s\-.,]+$/.test(desc)) {
+      return null;
+    }
+    
+    return desc;
   }
 
   // ========== MAPPING WITH MULTI-PASS ==========
@@ -988,35 +1052,46 @@
     state.isProcessing = true;
     updateFabState();
     
-    const loadingToast = showToast('Processing image...', 'loading', 0);
+    const loadingToast = showToast('Processing...', 'loading', 0);
     
     try {
-      // Compress image
-      showToast('Compressing...', 'info', 1000);
+      // Compress image aggressively for speed
       console.log('[AppyCrew OCR] Compressing image:', file.name, file.size, 'bytes');
       const compressedImage = await compressImage(file);
-      console.log('[AppyCrew OCR] Compressed to:', compressedImage.length, 'chars');
       
-      // Run OCR and Vision in parallel
-      showToast('Reading text...', 'info', 1500);
-      
+      // STEP 1: Try OCR first (fast, cheap)
       let ocrText = '';
-      let visionData = null;
       let ocrError = null;
       
       try {
-        [ocrText, visionData] = await Promise.all([
-          performOcr(compressedImage).catch(e => { ocrError = e; return ''; }),
-          performVisionAnalysis(compressedImage).catch(() => null)
-        ]);
+        ocrText = await performOcr(compressedImage);
       } catch (e) {
         ocrError = e;
+        console.warn('[AppyCrew OCR] OCR failed:', e.message);
       }
       
       hideToast(loadingToast);
       
+      // Analyze OCR quality to decide if we need Vision
+      const ocrQuality = analyzeOcrQuality(ocrText);
+      console.log('[AppyCrew OCR] OCR quality:', ocrQuality);
+      
+      let visionData = null;
+      
+      // STEP 2: Only call Vision if OCR quality is poor (Fix #6)
+      // This saves money and time when we have a good label
+      if (ocrQuality.needsVision) {
+        console.log('[AppyCrew OCR] Low OCR quality, calling Vision API');
+        const visionToast = showToast('Analyzing image...', 'loading', 0);
+        try {
+          visionData = await performVisionAnalysis(compressedImage);
+        } catch (e) {
+          console.warn('[AppyCrew OCR] Vision failed:', e.message);
+        }
+        hideToast(visionToast);
+      }
+      
       if (ocrError && !ocrText && !visionData) {
-        console.error('[AppyCrew OCR] Processing failed:', ocrError);
         showToast(`Error: ${ocrError.message}`, 'error', 5000);
         return;
       }
@@ -1031,8 +1106,6 @@
       state.lastVision = visionData;
       state.voiceData = null;
       
-      console.log('[AppyCrew OCR] Building mappings from:', { ocrText, visionData });
-      
       // Build mappings
       const mappings = buildMappingsWithMultiPass(ocrText, visionData, null);
       state.mappings = mappings;
@@ -1045,7 +1118,6 @@
         renderMappings();
       } else {
         showToast('No fields matched. Try clearer image.', 'info');
-        // Still open panel to show empty state
         openPanel();
         renderMappings();
       }
@@ -1058,6 +1130,43 @@
       state.isProcessing = false;
       updateFabState();
     }
+  }
+
+  // Analyze OCR text quality to decide if Vision API is needed (Fix #6)
+  function analyzeOcrQuality(text) {
+    if (!text || text.trim().length < 5) {
+      return { score: 0, needsVision: true, reason: 'no-text' };
+    }
+    
+    const cleaned = cleanOcrText(text);
+    let score = 0;
+    
+    // Check for structured label patterns (good OCR = no need for Vision)
+    const hasItemKeyword = ITEM_KEYWORDS.some(kw => cleaned.toLowerCase().includes(kw));
+    const hasLocationKeyword = LOCATION_KEYWORDS.some(kw => cleaned.toLowerCase().includes(kw));
+    const hasQuantity = /\b\d{1,3}\s*[xX×]?\s*(pcs?|pieces?|items?|boxes?)?\b/i.test(cleaned);
+    const hasLabelPattern = /\b(item|qty|quantity|room|location|from|desc|notes?)[:=]/i.test(cleaned);
+    
+    if (hasItemKeyword) score += 30;
+    if (hasLocationKeyword) score += 25;
+    if (hasQuantity) score += 20;
+    if (hasLabelPattern) score += 25;
+    
+    // Text length bonus
+    if (cleaned.length > 20) score += 10;
+    if (cleaned.length > 50) score += 10;
+    
+    // Penalize if mostly garbage characters
+    const alphaRatio = (cleaned.match(/[a-zA-Z]/g) || []).length / cleaned.length;
+    if (alphaRatio < 0.5) score -= 30;
+    
+    return {
+      score: score,
+      needsVision: score < 40,  // Only call Vision if low quality OCR
+      reason: score < 40 ? 'low-quality' : 'good-label',
+      hasItem: hasItemKeyword,
+      hasLocation: hasLocationKeyword
+    };
   }
 
   // ========== VOICE INPUT (Server-side Speech-to-Text) ==========
@@ -1138,19 +1247,60 @@
     
     const mimeType = getSupportedMimeType();
     const chunks = [];
+    let silenceStart = null;
+    let audioContext = null;
+    let analyser = null;
     
     try {
       state.mediaRecorder = new MediaRecorder(stream, { 
         mimeType: mimeType,
-        audioBitsPerSecond: 128000
+        audioBitsPerSecond: 64000  // Lower bitrate to save bandwidth/credits
       });
     } catch (e) {
-      // Fallback without options
       console.warn('[AppyCrew OCR] MediaRecorder fallback:', e);
       state.mediaRecorder = new MediaRecorder(stream);
     }
     
     state.audioStream = stream;
+    
+    // Setup silence detection
+    try {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioContext.createMediaStreamSource(stream);
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = 512;
+      source.connect(analyser);
+      
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      
+      const checkSilence = () => {
+        if (!state.isListening) return;
+        
+        analyser.getByteFrequencyData(dataArray);
+        const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+        
+        if (average < 5) {  // Silence threshold
+          if (!silenceStart) {
+            silenceStart = Date.now();
+          } else if (Date.now() - silenceStart > 2000) {  // 2 seconds of silence
+            console.log('[AppyCrew OCR] Silence detected, stopping');
+            stopVoiceInput();
+            return;
+          }
+        } else {
+          silenceStart = null;
+        }
+        
+        if (state.isListening) {
+          requestAnimationFrame(checkSilence);
+        }
+      };
+      
+      requestAnimationFrame(checkSilence);
+      state.audioContext = audioContext;
+    } catch (e) {
+      console.warn('[AppyCrew OCR] Silence detection not available:', e);
+    }
     
     state.mediaRecorder.ondataavailable = (e) => {
       if (e.data.size > 0) {
@@ -1159,8 +1309,12 @@
     };
     
     state.mediaRecorder.onstop = async () => {
-      // Stop all tracks
+      // Cleanup
       stream.getTracks().forEach(track => track.stop());
+      if (state.audioContext) {
+        state.audioContext.close().catch(() => {});
+        state.audioContext = null;
+      }
       
       if (chunks.length === 0) {
         showToast('No audio recorded', 'info');
@@ -1169,11 +1323,9 @@
         return;
       }
       
-      // Create blob from chunks
       const audioBlob = new Blob(chunks, { type: mimeType });
       console.log('[AppyCrew OCR] Recorded audio:', audioBlob.size, 'bytes');
       
-      // Convert to base64 and send to API
       await processAudioBlob(audioBlob, mimeType);
     };
     
@@ -1184,19 +1336,19 @@
     };
     
     // Start recording
-    state.mediaRecorder.start();
+    state.mediaRecorder.start(1000);  // Collect in 1s chunks
     console.log('[AppyCrew OCR] Recording started');
     
-    // Show recording indicator with stop instruction
-    showToast('🎤 Recording... Tap again to stop', 'info', 0);
+    // Brief toast that auto-dismisses (Fix #2)
+    showToast('🎤 Recording...', 'info', 1500);
     
-    // Auto-stop after 30 seconds
+    // Auto-stop after 10 seconds to save credits (Fix #4)
     state.recordingTimeout = setTimeout(() => {
       if (state.isListening) {
-        console.log('[AppyCrew OCR] Auto-stopping after 30s');
+        console.log('[AppyCrew OCR] Auto-stopping after 10s');
         stopVoiceInput();
       }
-    }, 30000);
+    }, 10000);
   }
 
   function stopVoiceInput() {
@@ -1312,51 +1464,125 @@
       notes: null
     };
     
-    // Split by common delimiters
-    const parts = transcript.split(/[,;]+/).map(p => p.trim()).filter(Boolean);
+    let text = transcript.trim();
+    console.log('[AppyCrew OCR] Parsing voice:', text);
     
-    // Try to identify each part
-    for (const part of parts) {
-      const partLower = part.toLowerCase();
-      
-      // Check for quantity
-      const qtyMatch = partLower.match(/^(\d+)\s*(pieces?|items?|boxes?|units?)?$/i);
-      if (qtyMatch && !data.quantity) {
-        data.quantity = qtyMatch[1];
-        continue;
+    // STEP 1: Extract quantity first (numbers at start or with keywords)
+    const qtyPatterns = [
+      /^(\d+)\s+/i,  // "2 chairs"
+      /\b(\d+)\s*(pcs?|pieces?|items?|boxes?|units?)\b/i,  // "2 pcs"
+      /\bquantity\s*[:=]?\s*(\d+)/i,  // "quantity 2"
+      /\bqty\s*[:=]?\s*(\d+)/i,  // "qty 2"
+    ];
+    
+    for (const pattern of qtyPatterns) {
+      const match = text.match(pattern);
+      if (match) {
+        data.quantity = match[1];
+        text = text.replace(match[0], ' ').trim();
+        break;
       }
-      
-      // Check for location
-      if (!data.location) {
-        const locMatch = fuzzyMatch(partLower, LOCATION_KEYWORDS);
-        if (locMatch) {
-          data.location = part;
-          continue;
+    }
+    
+    // STEP 2: Extract location (look for location keywords with context)
+    const locationPatterns = [
+      /\b(?:in|from|at|to)\s+(?:the\s+)?([a-z]+\s*(?:room|bedroom|bathroom)?)/i,
+      /\b(master\s+bedroom|living\s+room|dining\s+room|guest\s+room|kids?\s+room)/i,
+      /\b(bedroom|kitchen|bathroom|garage|attic|basement|office|study|lounge|hallway?)\b/i,
+    ];
+    
+    // Also check against our location keywords
+    for (const loc of LOCATION_KEYWORDS) {
+      const locRegex = new RegExp('\\b' + escapeRegex(loc) + '\\b', 'i');
+      if (locRegex.test(text)) {
+        data.location = loc;
+        text = text.replace(locRegex, ' ').trim();
+        break;
+      }
+    }
+    
+    // Try patterns if no match yet
+    if (!data.location) {
+      for (const pattern of locationPatterns) {
+        const match = text.match(pattern);
+        if (match) {
+          data.location = match[1].trim();
+          text = text.replace(match[0], ' ').trim();
+          break;
         }
       }
+    }
+    
+    // STEP 3: Extract item (look for item keywords or first noun phrase)
+    for (const item of ITEM_KEYWORDS) {
+      // Look for item with optional adjective before it
+      const itemRegex = new RegExp('\\b([a-z]+\\s+)?' + escapeRegex(item) + '\\b', 'i');
+      const match = text.match(itemRegex);
+      if (match) {
+        data.item = match[0].trim();
+        text = text.replace(match[0], ' ').trim();
+        break;
+      }
+    }
+    
+    // STEP 4: Handle comma/semicolon separated parts
+    if (!data.item || !data.location) {
+      const parts = text.split(/[,;]+/).map(p => p.trim()).filter(p => p.length > 0);
       
-      // Check for item
-      if (!data.item) {
-        const itemMatch = fuzzyMatch(partLower, ITEM_KEYWORDS);
-        if (itemMatch) {
-          data.item = part;
-          continue;
+      for (const part of parts) {
+        const partLower = part.toLowerCase();
+        
+        // Check if this part is a location
+        if (!data.location) {
+          const locMatch = LOCATION_KEYWORDS.find(loc => partLower.includes(loc));
+          if (locMatch) {
+            data.location = part;
+            continue;
+          }
+        }
+        
+        // Check if this part is an item
+        if (!data.item) {
+          const itemMatch = ITEM_KEYWORDS.find(item => partLower.includes(item));
+          if (itemMatch) {
+            data.item = part;
+            continue;
+          }
+        }
+        
+        // Otherwise it's description or notes
+        if (!data.description) {
+          data.description = part;
+        } else if (!data.notes) {
+          data.notes = part;
         }
       }
-      
-      // Default to description/notes
+    }
+    
+    // STEP 5: Remaining text becomes description
+    text = text.replace(/\s+/g, ' ').trim();
+    if (text.length > 2) {
       if (!data.description) {
-        data.description = part;
-      } else if (!data.notes) {
-        data.notes = part;
+        data.description = text;
+      } else if (!data.notes && text !== data.description) {
+        data.notes = text;
       }
     }
     
-    // If nothing matched, use whole transcript as description
-    if (!data.item && !data.location && !data.description) {
-      data.description = transcript;
+    // Clean up: remove item name from description (Fix #1)
+    if (data.item && data.description) {
+      const itemWords = data.item.toLowerCase().split(/\s+/);
+      let cleanDesc = data.description;
+      for (const word of itemWords) {
+        if (word.length > 2) {
+          cleanDesc = cleanDesc.replace(new RegExp('\\b' + escapeRegex(word) + '\\b', 'gi'), ' ');
+        }
+      }
+      cleanDesc = cleanDesc.replace(/\s+/g, ' ').trim();
+      data.description = cleanDesc.length > 2 ? cleanDesc : null;
     }
     
+    console.log('[AppyCrew OCR] Parsed voice data:', data);
     return data;
   }
 
@@ -1746,15 +1972,15 @@
 .ac-speed-dial-scan { color: #6366f1; }
 .ac-speed-dial-voice { color: #ec4899; }
 
-/* Main FAB Button - Smaller */
+/* Main FAB Button - Compact */
 #${FAB_ID} {
-  width: 48px;
-  height: 48px;
-  border-radius: 24px;
+  width: 40px;
+  height: 40px;
+  border-radius: 20px;
   border: none;
   background: #111827;
   color: white;
-  box-shadow: 0 6px 20px rgba(0,0,0,0.2);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -1765,8 +1991,8 @@
 }
 
 #${FAB_ID}:hover {
-  transform: scale(1.08);
-  box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+  transform: scale(1.1);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.25);
 }
 
 #${FAB_ID}:active {
@@ -1774,8 +2000,8 @@
 }
 
 #${FAB_ID} svg {
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   fill: currentColor;
   transition: all 0.3s;
 }
